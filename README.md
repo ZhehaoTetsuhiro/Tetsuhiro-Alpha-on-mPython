@@ -166,15 +166,24 @@ python3 tools/flash.py --doctor   # 只看板上固件版本和文件列表
 
 真板子上踩过的坑（都已经修了）：
 
+* **掌控板上写了文件必须 `close()`**：`open(f,'ab').write(x)` 这种"用完即丢"的
+  写法在电脑上没事，在板上会**默默丢数据**（MicroPython 没有引用计数，
+  文件对象要等 GC 才 flush）。所以每块都老老实实 `f = open(...)` /
+  `f.write(...)` / `f.close()`。
 * **掌控板那版 MicroPython 没有 `bytes.fromhex`**（电脑上有，板上没有）。
   所以"一段字节怎么写进去"是**到板上现问**的：`ubinascii.unhexlify` →
   `binascii.unhexlify` → `bytes.fromhex` → `int.to_bytes` → 整数列表，
-  谁行用谁（掌控板走 `int.to_bytes` 那条）；每次烧录会打印
-  `板上解码方式：xxxx`。
+  谁行用谁；每次烧录会打印 `板上解码方式：xxxx`。
 * 写之前先**问板子还剩多少空间**，不够就先说，不硬写到一半 ENOSPC。
 * 板上的老文件备份成 `*.bak`；**已经有 .bak 就不动它**（最先备份的那个才是原件）。
   半路写炸了会**自动退回写之前的样子**。
 * 板子上的 `main.py` 是**最后**才传的 —— 万一断在半路，板子上的旧程序还能跑。
+
+传完想确认板子真的能用：
+```bash
+python3 tools/flash.py --doctor   # 固件版本、文件列表、剩余空间，还把六个模块
+                                  # 逐个 import 一遍（过了就是语法和堆都够）
+```
 
 ---
 
@@ -218,7 +227,7 @@ MicroPython 编译一个模块时要先建整棵语法树，**峰值正比于单
 
 ```bash
 python3 tests/test_all.py      # 105 条
-python3 tests/test_flash.py    # 26 条（含"砍掉 unhexlify 的假板子"和板上代码的 MicroPython 解析）
+python3 tests/test_flash.py    # 29 条（含"砍掉 unhexlify 的假板子"和板上代码的 MicroPython 解析）
 make check                     # 上面两条 + 例子跑一遍 + 打包尺寸检查
 ```
 

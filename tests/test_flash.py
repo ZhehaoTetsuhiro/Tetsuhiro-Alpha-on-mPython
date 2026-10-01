@@ -38,10 +38,58 @@ class _NoToBytes(int):
     to_bytes = None
 
 
+class _BoardFile(object):
+    """板上那种"不 close 就不落盘"的文件对象。
+
+    MicroPython 没有引用计数：`open(f,'ab').write(x)` 不 close 就**丢数据**
+    （真板子上量过：文件一直是 0 字节）。CPython 会立刻回收并 flush，所以
+    在电脑上怎么测都发现不了 —— 这个类专门把那层"电脑和板的差别"补上，
+    谁再写出没 close 的写法，测试当场红。
+    """
+
+    def __init__(self, path, mode):
+        self.path = path
+        self.binary = 'b' in mode
+        self.append = 'a' in mode
+        self.buf = bytearray()
+        self.closed = False
+        if not self.append:
+            with open(path, 'wb' if self.binary else 'w') as f:   # 打开就截空
+                pass
+
+    def write(self, data):
+        if isinstance(data, str):
+            data = data.encode('utf-8')
+        self.buf += data
+        return len(data)
+
+    def close(self):
+        if not self.closed:
+            self.closed = True
+            with open(self.path, 'ab' if self.binary else 'a') as f:
+                f.write(bytes(self.buf))
+            self.buf = bytearray()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        self.close()
+
+    def __del__(self):
+        pass          # 不 close 就丢 —— 板上就是这样
+
+
+def _board_open(path, mode='r'):
+    if 'w' in mode or 'a' in mode or '+' in mode:
+        return _BoardFile(path, mode)
+    return open(path, mode)
+
+
 class FakeSerial(object):
     """一块假掌控板。"""
 
-    def __init__(self, root, board_hex=True, board_bytes=True):
+    def __init__(self, root, board_hex=True, board_bytes=True, lazy_files=True):
         self.root = root
         self.out = bytearray()
         self.line = bytearray()
@@ -53,6 +101,8 @@ class FakeSerial(object):
         self.board_hex = board_hex
         # board_bytes=False：连 int.to_bytes 都没有（只留整数列表那条保底路）
         self.board_bytes = board_bytes
+        # lazy_files=True：文件对象不 close 就不落盘（真板子的脾气，见 _BoardFile）
+        self.lazy_files = lazy_files
 
     # pyserial 的那几个接口
     @property
@@ -94,6 +144,8 @@ class FakeSerial(object):
             self.ns['bytes'] = _NoFromhex       # 把内建 bytes 换成没有 fromhex 的
         if not self.board_bytes:
             self.ns['int'] = _NoToBytes         # int 也没有 to_bytes
+        if self.lazy_files:
+            self.ns['open'] = _board_open       # 不 close 就不落盘
         buf = io.StringIO()
         err = ''
         cwd = os.getcwd()
@@ -165,6 +217,30 @@ class TestRawRepl(unittest.TestCase):
 
     # ---- 板上没有 unhexlify / bytes.fromhex 的那档事（真板子踩过）----
 
+    def test_the_fake_board_loses_unclosed_writes(self):
+        """先把假板子的脾气钉住：**不 close 的写就该丢**（真板子就是这样）。
+
+        这条要是红了，说明 _BoardFile 不再模拟那块板子，后面那些"写得对"的
+        测试就都失去意义了。
+        """
+        r = self._repl()
+        r.exec("open('z.bin', 'wb').close()")
+        r.exec("open('z.bin', 'ab').write(b'hi')")      # 故意不 close
+        out, err = r.exec("f = open('z.bin', 'rb')\nd = f.read()\nf.close()\nprint(len(d))")
+        self.assertEqual(out.strip(), '0')
+
+    def test_chunk_code_closes_the_file(self):
+        # 掌控板上不 close 就丢数据 —— 五种编码都得有 close
+        for kind in ('ubin', 'bin', 'hex', 'bytes', 'ints'):
+            self.assertIn('f.close()', flash.chunk_code('ta.prog', kind, b'AB'))
+
+    def test_write_file_through_a_board_that_drops_unclosed_writes(self):
+        r = self._repl()
+        data = bytes((i * 11 + 5) & 0xff for i in range(flash.CHUNK * 3 + 7))
+        flash.write_file(r, 'ta_app.py', data)
+        with open(os.path.join(self.tmp, 'ta_app.py'), 'rb') as f:
+            self.assertEqual(f.read(), data)
+
     def test_pick_writer_asks_the_board(self):
         r = self._repl()
         # 电脑上（CPython）没有 ubinascii，但有 binascii —— 问出来什么就是什么
@@ -203,12 +279,12 @@ class TestRawRepl(unittest.TestCase):
         with open(os.path.join(self.tmp, 'ta_core.py'), 'rb') as f:
             self.assertEqual(f.read(), data)
 
-    def test_chunk_code_carries_its_own_state(self):
-        # 一次写一块，**不许**依赖上一块留下的变量（连打开的文件都不留）
+    def test_chunk_code_opens_and_closes_every_time(self):
+        # 每块自己 open、自己 close —— 不依赖上一块留下的句柄（板上不 close 就丢数据）
         for kind in ('ubin', 'bin', 'hex', 'bytes', 'ints'):
             code = flash.chunk_code('ta.prog', kind, b'AB')
-            self.assertNotIn('f.write', code)
-            self.assertIn("open('ta.prog', 'ab').write(", code)
+            self.assertIn("f = open('ta.prog', 'ab')", code)
+            self.assertIn('f.close()', code)
 
     def test_chunk_code_bytes_puts_the_length_in(self):
         code = flash.chunk_code('x.bin', 'bytes', b'\x00\x00\xff')

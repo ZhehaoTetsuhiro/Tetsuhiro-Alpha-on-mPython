@@ -243,27 +243,33 @@ def pick_writer(repl):
 
 
 def chunk_code(name, kind, part):
-    """生成"把这 192 字节追加进文件"的那一句，**每个字块自给自足**。
+    """生成"把这 192 字节追加进文件"的那一句。
 
-    不用跨块变量（连打开的文件都不留着），这样板子的 raw REPL 就算是
-    一块只认单条语句的，也能一条一条往下走。
+    **每一句都必须自己 open / write / close** —— 这是真板子上量出来的：
+    `open(f,'ab').write(x)`（不 close）在掌控板上会**默默丢数据**（文件一直是 0 字节），
+    因为 MicroPython 不像 CPython 那样立刻回收，文件对象要等 GC 才 flush。
+    实测：不 close = 0 字节，显式 close = 192 / 384 / 576 一路对。
+    所以这里宁可每块多两次 open/close，也不留一个没关的句柄。
 
     编码长度（串口上越快越好）：hex / bytes 都是"每字节 2 个字符"，
     ints 那个整数列表是 4 个字符上下 —— 61 KB 的板子代码在 115200 波特下，
     前者约 20 秒，后者要一分半，所以只当最后的保底。
     """
     if kind == 'ints':
-        return "open(%r, 'ab').write(bytearray((%s,)))" \
-               % (name, ','.join(str(b) for b in part))
+        body = 'bytearray((%s,))' % ','.join(str(b) for b in part)
+        return "f = open(%r, 'ab')\nf.write(%s)\nf.close()" % (name, body)
     h = ''.join('%02x' % b for b in part)
     if kind == 'ubin':
-        return "from ubinascii import unhexlify\nopen(%r, 'ab').write(unhexlify('%s'))" % (name, h)
+        return "from ubinascii import unhexlify\nf = open(%r, 'ab')\n" \
+               "f.write(unhexlify('%s'))\nf.close()" % (name, h)
     if kind == 'bin':
-        return "from binascii import unhexlify\nopen(%r, 'ab').write(unhexlify('%s'))" % (name, h)
+        return "from binascii import unhexlify\nf = open(%r, 'ab')\n" \
+               "f.write(unhexlify('%s'))\nf.close()" % (name, h)
     if kind == 'bytes':
         # 没有 unhexlify/fromhex，但 int.to_bytes 一定有：拿整数转回字节
-        return "open(%r, 'ab').write(int('%s', 16).to_bytes(%d, 'big'))" % (name, h, len(part))
-    return "open(%r, 'ab').write(bytes.fromhex('%s'))" % (name, h)
+        return "f = open(%r, 'ab')\nf.write(int('%s', 16).to_bytes(%d, 'big'))\nf.close()" \
+               % (name, h, len(part))
+    return "f = open(%r, 'ab')\nf.write(bytes.fromhex('%s'))\nf.close()" % (name, h)
 
 
 def write_file(repl, name, data, dry_run=False, kind=None):
@@ -416,9 +422,27 @@ def main(argv):
     try:
         if '--doctor' in argv:
             repl.enter()
-            out, err = repl.exec("import sys\nprint('micropython', sys.version)\n"
-                                 "import os\nprint(sorted(os.listdir()))")
-            print(out)
+            out, err = repl.exec("import sys, os\n"
+                                 "print('micropython', sys.version)\n"
+                                 "print(sorted(os.listdir()))\n")
+            print(out.strip())
+            free = free_space(repl)
+            print('剩 %s 字节' % ('?' if free is None else free))
+            # 真正要紧的一条：板子能不能把这些模块 import 起来（顺带看看堆够不够）
+            print('试 import（这一步过了，说明板上语法和内存都够）：')
+            out, err = repl.exec(
+                "import gc\n"
+                "for m in ('ta_bits', 'ta_core', 'ta_ui', 'ta_view', 'ta_app', 'ta_hw'):\n"
+                "    try:\n"
+                "        __import__(m)\n"
+                "        print('  ok', m)\n"
+                "    except Exception as e:\n"
+                "        print('  坏', m, type(e).__name__, e)\n"
+                "gc.collect()\n"
+                "print('  free heap', gc.mem_free())\n")
+            print(out.strip())
+            if err.strip():
+                print('（stderr）%s' % err.strip()[:400])
             return 0
         repl.enter()
         # 先备份同名的（已经有 .bak 的留着不动 —— 那才是原件）
