@@ -38,6 +38,12 @@ def asm(src):
     return bytes_to_digits(T.assemble_bytes(src))
 
 
+def example_src(name):
+    """读 examples/<name>.s 的源码。"""
+    with open(os.path.join(ROOT, 'examples', name + '.s'), encoding='utf-8') as f:
+        return f.read()
+
+
 def asm_file(name):
     with open(os.path.join(ROOT, 'examples', name + '.s')) as f:
         return asm(f.read())
@@ -226,7 +232,7 @@ class TestVM(unittest.TestCase):
 class TestAsm(unittest.TestCase):
     def test_disasm_roundtrip_of_the_examples(self):
         for name in ('hello', 'countdown', 'echo'):
-            for w in T.assemble(open(os.path.join(ROOT, 'examples', name + '.s')).read()):
+            for w in T.assemble(example_src(name)):
                 self.assertFalse(decode(w).startswith('???'),
                                  '%s: %08x 反汇编不出来' % (name, w))
 
@@ -587,8 +593,7 @@ class TestApp(unittest.TestCase):
 
     def test_run_and_see_output(self):
         hw, app = self._app(script='a')
-        self._booted(hw, app, open(os.path.join(ROOT, 'examples',
-                                                'countdown.s')).read())
+        self._booted(hw, app, example_src('countdown'))
         app.loop()
         for want in ('5', '4', '3', '2', '1'):
             self.assertIn(want, hw.serial, hw.serial)
@@ -650,8 +655,7 @@ class TestApp(unittest.TestCase):
 
     def test_input_screen_feeds_the_program(self):
         hw, app = self._app(script='')
-        self._booted(hw, app, open(os.path.join(ROOT, 'examples',
-                                                'echo.s')).read())
+        self._booted(hw, app, example_src('echo'))
         app.start_run()
         self.assertEqual(app.vm.run(10000, app.step_limit), ST_NEED_IN)
         app.start_input()
@@ -669,8 +673,7 @@ class TestApp(unittest.TestCase):
 
     def test_input_char_mode(self):
         hw, app = self._app(script='')
-        self._booted(hw, app, open(os.path.join(ROOT, 'examples',
-                                                'echo.s')).read())
+        self._booted(hw, app, example_src('echo'))
         app.start_run()
         app.vm.run(10000, app.step_limit)
         app.start_input()
@@ -683,8 +686,7 @@ class TestApp(unittest.TestCase):
 
     def test_input_a_short_sends_a_space(self):
         hw, app = self._app(script='')
-        self._booted(hw, app, open(os.path.join(ROOT, 'examples',
-                                                'echo.s')).read())
+        self._booted(hw, app, example_src('echo'))
         app.start_run()
         app.vm.run(10000, app.step_limit)
         app.start_input()
@@ -693,8 +695,7 @@ class TestApp(unittest.TestCase):
 
     def test_input_a_long_stops_the_run(self):
         hw, app = self._app(script='')
-        self._booted(hw, app, open(os.path.join(ROOT, 'examples',
-                                                'echo.s')).read())
+        self._booted(hw, app, example_src('echo'))
         app.start_run()
         app.vm.run(10000, app.step_limit)
         app.start_input()
@@ -703,8 +704,7 @@ class TestApp(unittest.TestCase):
 
     def test_input_b_long_toggles_mode(self):
         hw, app = self._app(script='')
-        self._booted(hw, app, open(os.path.join(ROOT, 'examples',
-                                                'echo.s')).read())
+        self._booted(hw, app, example_src('echo'))
         app.start_run()
         app.vm.run(10000, app.step_limit)
         app.start_input()
@@ -713,8 +713,7 @@ class TestApp(unittest.TestCase):
 
     def test_input_ab_inserts_a_dot(self):
         hw, app = self._app(script='')
-        self._booted(hw, app, open(os.path.join(ROOT, 'examples',
-                                                'echo.s')).read())
+        self._booted(hw, app, example_src('echo'))
         app.start_run()
         app.vm.run(10000, app.step_limit)
         app.start_input()
