@@ -126,11 +126,16 @@ def draw_edit(hw, app):
             break
         y = r + 1
         if app.dis:
-            # 反汇编视图：一行一条指令，左边一个 '>' 指着光标所在的那条
+            # 反汇编视图：一行一条指令，左边一个 '>' 指着光标所在的那条。
+            # **只有凑满 16 位的那一行才写助记符** —— 光标停在程序末尾时那一行
+            # 根本没有指令，写个 '???' 出来只是噪声（用户要求去掉）。
             hw.text('>' if idx == cur_line else ' ', 0, y)
-            s = decode(ed.word_at(base))
-            if s.startswith('??? '):
-                s = '???'
+            if base + DIGITS_PER_WORD <= n:
+                s = decode(ed.word_at(base))
+                if s.startswith('??? '):
+                    s = '???'
+            else:
+                s = ''
             hw.text(s[:hw.cols - 1], 1, y)
         else:
             hw.text(digits_to_text(ed.ds[base:base + DIGITS_PER_ROW]), 0, y)

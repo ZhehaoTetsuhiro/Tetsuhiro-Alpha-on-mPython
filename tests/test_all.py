@@ -938,6 +938,43 @@ class TestApp(unittest.TestCase):
         app.draw_edit()
         self.assertIn('0000110000110103', hw.frames[-1])
 
+    def test_disassembly_view_writes_no_question_marks_for_empty_rows(self):
+        """光标停在程序末尾时那一行根本没有指令 —— 不该写个 '???' 出来。"""
+        hw, app = self._app(script='')
+        self._booted(hw, app, '    li a0, 5\n    ecall\n')     # 32 位 = 2 行（整）
+        app.dis = True
+        app.ed.cur = app.ed.len()          # 光标在末尾 = 第 2 行（空行）
+        app.top = 0
+        app.dirty = True
+        app.draw_edit()
+        screen = hw.frames[-1]
+        self.assertNotIn('???', screen)
+        self.assertIn('>', screen)          # 光标那条还是拿 '>' 指着
+
+    def test_disassembly_view_writes_no_question_marks_for_a_half_typed_instruction(self):
+        """还没敲满 16 位的那一行也是在写东西 —— 同样不写 '???'。"""
+        hw, app = self._app(script='')
+        self._booted(hw, app, '    li a0, 5\n')               # 16 位
+        app.ed.insert(0)                                     # 变成 17 位：末行只有 1 位
+        app.dis = True
+        app.ed.cur = app.ed.len()
+        app.top = 0
+        app.dirty = True
+        app.draw_edit()
+        self.assertNotIn('???', hw.frames[-1])
+
+    def test_disassembly_view_still_shows_a_bad_whole_instruction(self):
+        """凑满 16 位但真的译不出来（比如 .word 0）—— 该报的还是要报。"""
+        hw, app = self._app(script='')
+        app.preload = '0' * 32                     # 全是 0：两条非法指令
+        app.boot()
+        app.dis = True
+        app.ed.cur = 0
+        app.top = 0
+        app.dirty = True
+        app.draw_edit()
+        self.assertIn('???', hw.frames[-1])
+
     def test_disassembly_view_marks_the_instruction_under_the_cursor(self):
         hw, app = self._app(script='')
         self._booted(hw, app, '    addi a0, x0, 5\nnop\nnop\n')
@@ -1076,6 +1113,58 @@ class TestApp(unittest.TestCase):
         app.start_input()
         app.handle_input([('T', 'short'), ('AB', 'short'), ('Y', 'short')])
         self.assertEqual(app.line.text(), '1.2')
+
+    # ---- 运行中按键停运行：**停就是停**，松手不许再放一枪 ----
+
+    def _hold_keys(self, app):
+        """接管按键电平（不用 SimHW 的剧本），返回一个"按着哪些键"的集合。"""
+        held = set()
+        app.scan.read = lambda name: name in held
+        return held
+
+    def _tap(self, app, held, name, ticks=4):
+        held.add(name)
+        for _ in range(ticks):
+            app.tick()
+        held.discard(name)
+        for _ in range(ticks):
+            app.tick()
+
+    def test_tapping_a_to_stop_a_run_does_not_restart_it(self):
+        """真板子上报的那条：运行中按一下 A，停了之后自己又跑起来。"""
+        hw, app = self._app(script='')
+        self._booted(hw, app, 'loop:\n    j loop\n')
+        held = self._hold_keys(app)
+        self._tap(app, held, 'A')                    # 按一下 A -> 开始运行
+        self.assertEqual(app.mode, ta_app.MODE_RUN)
+        self._tap(app, held, 'A')                    # 再按一下 A -> 停
+        self.assertEqual(app.mode, ta_app.MODE_EDIT)
+        for _ in range(8):                           # 松手之后再看看
+            app.tick()
+        self.assertEqual(app.mode, ta_app.MODE_EDIT, '松手又把程序跑起来了')
+
+    def test_stopping_a_run_with_another_key_does_not_edit_anything(self):
+        """拿 P 去停运行，不该顺手在程序里插一个 3。"""
+        hw, app = self._app(script='')
+        self._booted(hw, app, 'loop:\n    j loop\n')
+        held = self._hold_keys(app)
+        before = app.ed.text()
+        self._tap(app, held, 'A')
+        self.assertEqual(app.mode, ta_app.MODE_RUN)
+        self._tap(app, held, 'P')                    # 停运行的那一下
+        self.assertEqual(app.mode, ta_app.MODE_EDIT)
+        self.assertEqual(app.ed.text(), before)      # 一个字没动
+
+    def test_a_fresh_press_of_a_runs_again_after_stopping(self):
+        """停运行不会把 A 键废掉：松开再按一次，照常运行。"""
+        hw, app = self._app(script='')
+        self._booted(hw, app, 'loop:\n    j loop\n')
+        held = self._hold_keys(app)
+        self._tap(app, held, 'A')                    # 跑
+        self._tap(app, held, 'A')                    # 停
+        self.assertEqual(app.mode, ta_app.MODE_EDIT)
+        self._tap(app, held, 'A')                    # 再按一次
+        self.assertEqual(app.mode, ta_app.MODE_RUN)
 
     def test_running_any_key_stops_without_clearing(self):
         hw, app = self._app(script='')

@@ -174,6 +174,18 @@ class KeyScanner(object):
                                 'stages': tuple(item[2]), 'active': False,
                                 'fired': -1, 'cancel': False, 't0': 0})
 
+    def mute_all(self):
+        """所有键都闭嘴，**直到松手为止**。
+
+        用来堵这一类事故：运行中按一下 A 想停 —— 停是停了（`leave_run`），
+        可松手那一下在编辑界面里又算"短按 A = 运行"，程序自己又跑起来了。
+        别的键也一样：拿 P 去停运行，不该顺手在程序里插一个 3。
+        """
+        for item in self.spec:
+            k = self.st[item[0]]
+            k['muted'] = True
+            k['longed'] = True       # 松手也别补一个 short 出来
+
     def any_down(self):
         for item in self.spec:
             if self.st[item[0]]['stable']:
@@ -210,6 +222,7 @@ class KeyScanner(object):
             k = self.st[item[0]]
             k['edge'] = 0
             raw = 1 if self.read(item[0]) else 0
+            k['raw'] = raw          # 清静音要看**物理电平**，不是去抖之后那个
             if raw == k['stable']:
                 k['cnt'] = 0
             else:
@@ -269,9 +282,13 @@ class KeyScanner(object):
                     k['trep'] = t
                     ev.append((name, 'long'))
 
+        # 第 4 步：**确认松手了**才解除静音。
+        # 注意判据是"稳定为 0 且去抖计数归零"，不是单纯 stable == 0 ——
+        # 换键表（运行 → 编辑）之后所有键的 stable 都是 0，可键还按在手上；
+        # 拿 stable == 0 当"松手了"，静音会被当场抹掉，松手时那一枪照样放出来。
         for item in self.spec:
             k = self.st[item[0]]
-            if not k['stable']:
+            if not k['stable'] and not k['cnt']:
                 k['muted'] = False
         return ev
 

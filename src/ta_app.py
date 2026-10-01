@@ -241,6 +241,9 @@ class App(object):
         self.scan.cancel_combos()
         self.mode = MODE_EDIT
         self.scan.set_keys(None, None)
+        # 刚才是**哪个键**按下去把运行停掉的，松手时不许它在编辑界面里再放一枪：
+        # 拿 A 停 -> 松手别又"运行"；拿 P 停 -> 松手别插一个 3。
+        self.scan.mute_all()
         self.dirty = True
 
     # ── 编辑：按键 ────────────────────────────────────────
@@ -390,6 +393,7 @@ class App(object):
             self.vm.status = ST_STOP
         self.mode = MODE_EDIT
         self.scan.set_keys(None, None)
+        self.scan.mute_all()          # 同 leave_run：松手不许再放一枪
         self.note('STOP')
         self.dirty = True
 
