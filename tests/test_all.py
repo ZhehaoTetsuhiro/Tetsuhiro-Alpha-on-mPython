@@ -414,14 +414,34 @@ class TestKeyScanner(unittest.TestCase):
         self.assertGreaterEqual(ev.count(('P', 'long')), 4)
         self.assertNotIn(('P', 'short'), self._release_stable(io, sc))
 
-    def test_long_press_is_one_shot_when_repeat_is_zero(self):
+    def test_a_stays_one_shot_on_long_press(self):
+        """A 的长按是"保存"，按住不能反复存 —— 只有一下。"""
+        io, sc = self._scan()
+        self._press_stable(io, sc, 'A')
+        ev = []
+        for _ in range(8):
+            io.hold(100, 'A')
+            ev.extend(sc.poll())
+        self.assertEqual(ev.count(('A', 'long')), 1)
+
+    def test_holding_o_keeps_repeating(self):
+        """按住 O 要一直往上挪（用户要求的；原来是一次性的）。"""
         io, sc = self._scan()
         self._press_stable(io, sc, 'O')
         ev = []
         for _ in range(8):
             io.hold(100, 'O')
             ev.extend(sc.poll())
-        self.assertEqual(ev.count(('O', 'long')), 1)
+        self.assertGreaterEqual(ev.count(('O', 'long')), 4)
+
+    def test_holding_n_keeps_repeating(self):
+        io, sc = self._scan()
+        self._press_stable(io, sc, 'N')
+        ev = []
+        for _ in range(8):
+            io.hold(100, 'N')
+            ev.extend(sc.poll())
+        self.assertGreaterEqual(ev.count(('N', 'long')), 4)
 
     def test_debounce_ignores_a_single_tick(self):
         io, sc = self._scan()
@@ -829,11 +849,38 @@ class TestApp(unittest.TestCase):
         self.assertEqual(app.ed.text().replace('\n', ''), '3210')
 
     def test_long_press_moves_a_whole_instruction(self):
-        hw, app = self._app(script='O')             # 大写 = 长按
+        """长按一下（刚过 0.4s）挪一整条；按住不放才连发（另有测试）。"""
+        hw, app = self._app(script=[('O', 450)])
         app.ed.set_text('0' * 40)
         app.ed.cur = 32
         app.loop()
         self.assertEqual(app.ed.cur, 16)
+
+    def test_holding_n_keeps_stepping_down_a_row_at_a_time(self):
+        """按住 N 一直往下挪：按住 0.9 秒该挪好几行（一行 = 16 位）。"""
+        hw, app = self._app(script=[('N', 900)])    # 按住 N 0.9 秒
+        app.ed.set_text('0' * 320)                  # 20 行
+        app.ed.cur = 0
+        app.loop()
+        self.assertGreaterEqual(app.ed.cur, 16 * 3)     # 至少挪了三行
+        self.assertEqual(app.ed.cur % DIGITS_PER_ROW, 0)  # 而且停在整行上
+        self.assertLessEqual(app.ed.cur, 320)
+
+    def test_holding_o_keeps_stepping_up_a_row_at_a_time(self):
+        hw, app = self._app(script=[('O', 900)])
+        app.ed.set_text('0' * 320)
+        app.ed.cur = 320
+        app.loop()
+        self.assertLessEqual(app.ed.cur, 320 - 16 * 3)
+        self.assertEqual(app.ed.cur % DIGITS_PER_ROW, 0)
+
+    def test_holding_o_at_the_top_just_stops(self):
+        """到头了就停在那儿，不许绕回末尾。"""
+        hw, app = self._app(script=[('O', 900)])
+        app.ed.set_text('0' * 64)
+        app.ed.cur = 0
+        app.loop()
+        self.assertEqual(app.ed.cur, 0)
 
     def test_short_press_moves_one_digit(self):
         hw, app = self._app(script='n')
