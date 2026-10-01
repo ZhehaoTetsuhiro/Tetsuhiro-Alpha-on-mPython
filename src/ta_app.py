@@ -5,7 +5,7 @@
 
   编辑画面                        运行画面                     输入画面
   ┌──────────────────┐          ┌──────────────────┐        ┌──────────────────┐
-  │E  48 / 112  addi │ ←状态    │R END 918         │        │I NUM 2/32        │
+  │E  48 / 112  LOAD │ ←状态    │R END 918         │        │I NUM 2/32        │
   │0000000100000001  │ ←一条指令 │140               │        │12                │
   │0001001100001101  │   16 位   │0.333             │        │= 6               │
   │...               │          │                  │        │O ok  A 空格      │
@@ -91,7 +91,7 @@ class App(object):
                 s = None
         if s:
             self.install(s)
-        self.ed.saved = True
+        self.ed.state = 'LOAD'
         self.hw.write('# TA ready. %d digits' % self.ed.len())
         self.dirty = True
 
@@ -105,7 +105,7 @@ class App(object):
             self.ed.clear()
             self.load_bad = True
             self.note('BIG')
-        self.ed.saved = True
+        self.ed.state = 'LOAD'
         return not self.load_bad
 
     def loop(self):
@@ -285,7 +285,7 @@ class App(object):
             ok = self.hw.save(self.filename, self.ed.text())
         except Exception:
             ok = False
-        self.ed.saved = bool(ok)
+        self.ed.state = 'SAVED' if ok else 'UNSAV'
         self.note('SAVED' if ok else 'NOFLSH')
 
     def do_clear(self):
@@ -295,7 +295,7 @@ class App(object):
             self.hw.save(self.filename, '')
         except Exception:
             pass
-        self.ed.saved = True
+        self.ed.state = 'SAVED'      # 板上那份也是空的，两边对得上
         self.note('CLEAR')
 
     def do_reload(self):

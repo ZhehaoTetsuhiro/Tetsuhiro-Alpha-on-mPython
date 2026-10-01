@@ -32,23 +32,47 @@ def render_bytes(bys):
 
 
 def status_extra(hw, app):
-    """状态行右边那几格：先是"刚刚发生了什么"，再是存盘状态。"""
+    """状态行右边那几格：先是"刚刚发生了什么"，再是那张存档标签。
+
+    标签有三态（需求：启动后默认显示 LOAD）：
+      LOAD  —— 开机 / 重读 flash 读来的，一个字没改
+      UNSAV —— 改过了，还没存
+      SAVED —— 在板子上存过了
+    """
     if app.msg and hw.now() - app.msg_t < 1800:
         return app.msg
-    if not app.ed.saved:
-        return 'UNSAV'
-    return ''
+    return app.ed.state
 
 
-def mnemonic_here(app):
-    """光标所在这条指令是什么（状态行右边那几格）。"""
-    if not app.ed.len():
-        return ''
-    s = decode(app.ed.word_under_cursor())
-    if s.startswith('???') or s.startswith('fence'):
-        return ''
-    i = s.find(' ')
-    return s[:i] if i > 0 else s
+# 状态行左边那几格，**从松到紧**：
+#   '%s%4d / %d' → 'E  48 / 240'   （斜杠永远在第 7 格，数字位数变了也不跳）
+#   '%s%3d / %d' → 'E 48 / 240'    （还是"两边各一个空格"，少占一格）
+#   '%s%3d/%d'   → 'E 48/240'      （挤到这一步只为了让 RELOAD 这类长提示露个脸）
+HEAD_WIDE = ('%s%4d / %d', '%s%3d / %d')
+HEAD_TIGHT = ('%s%3d/%d', '%s%d/%d')
+
+TAIL_W = 5              # 右上角标签最宽 5 格（SAVED / UNSAV）
+
+
+def status_fields(app, cols, tail, spaced_only):
+    """状态行怎么排：返回 (左边那段, 右边那段或 None)。
+
+    * 左边按**最宽的那张标签**（5 格）留位，所以 LOAD → UNSAV → SAVED 换词的
+      时候数字不会左右跳。
+    * `spaced_only`（常态那张标签）时**绝不把斜杠挤成贴着的** —— 宁可标签让位；
+      一闪而过的提示（RELOAD / CLEAR...）才允许挤。
+    * 程序上千位（数字占 4 位）时右边就摆不下标签了 —— 这时**数字优先**，
+      标签让位。
+    """
+    mark = 'D' if app.dis else 'E'
+    need = max(len(tail), TAIL_W) if tail else 0
+    forms = HEAD_WIDE if spaced_only else HEAD_WIDE + HEAD_TIGHT
+    for fmt in forms:
+        head = fmt % (mark, app.ed.cur, app.ed.len())
+        if len(head) + (1 if tail else 0) + need <= cols:
+            return head, tail
+    head = HEAD_WIDE[0] % (mark, app.ed.cur, app.ed.len())
+    return head[:cols], None
 
 
 def draw_edit(hw, app):
@@ -81,17 +105,14 @@ def draw_edit(hw, app):
         hw.text(label, 0, 0)
         hw.text('#' * done + ' ' * (room - done), len(label), 0)
     else:
-        # 状态行：E/D + 4 格光标位 + " / " + 长度。
-        # 斜杠**两边各一个空格**，看着像"48 / 224"而不是"48/ 224"；
-        # 左边固定 4 格，所以斜杠永远在第 7 格（列号不随数字长短跳）。
-        head = '%s%4d / %d' % ('D' if app.dis else 'E', ed.cur, n)
+        # 状态行：左边 `E 光标 / 长度`（斜杠两边各一个空格），右边那张存档标签
+        # （LOAD / UNSAV / SAVED）或者刚刚发生的那件事（DIG / DIS / RELOAD...）。
+        tail = status_extra(hw, app)
+        spaced_only = (tail == app.ed.state)        # 常态标签宁可让位也不挤斜杠
+        head, tail = status_fields(app, hw.cols, tail, spaced_only)
         hw.text(head[:hw.cols], 0, 0)
-        if not app.dis:
-            ex = status_extra(hw, app) or mnemonic_here(app)
-            if ex:
-                x = hw.cols - len(ex)
-                if x > len(head):
-                    hw.text(ex, x, 0)
+        if tail:
+            hw.text(tail, hw.cols - len(tail), 0)
 
     cur_line = ed.cur // DIGITS_PER_WORD
     for r in range(drows):

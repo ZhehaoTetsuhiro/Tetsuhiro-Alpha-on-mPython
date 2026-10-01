@@ -329,9 +329,14 @@ class TestEditor(unittest.TestCase):
     def test_dirty_flag(self):
         ed = Editor()
         ed.set_text('0')
-        self.assertTrue(ed.saved)
+        self.assertEqual(ed.state, 'LOAD')          # 读来的
         ed.insert(1)
-        self.assertFalse(ed.saved)
+        self.assertEqual(ed.state, 'UNSAV')         # 改过了
+        ed.set_text('0')
+        ed.backspace()
+        self.assertEqual(ed.state, 'UNSAV')
+        ed.clear()
+        self.assertEqual(ed.state, 'UNSAV')
 
     def test_word_under_cursor(self):
         ed = Editor()
@@ -610,29 +615,114 @@ class TestApp(unittest.TestCase):
         app.loop()
         self.assertIn('E  20 / 20', hw.frames[0])
 
+    # ---- 状态行右边那张标签：LOAD / UNSAV / SAVED（需求：启动后默认 LOAD）----
+
+    def _status_row(self, hw):
+        return hw.frames[-1].split('\n')[1][1:-1]
+
+    def test_boot_shows_load_in_the_top_right_corner(self):
+        hw, app = self._app(script='')
+        self._booted(hw, app, '    li a0, 5\n')
+        app.dirty = True
+        app.draw_edit()
+        row = self._status_row(hw)
+        self.assertEqual(row[-4:], 'LOAD')          # 就在右上角
+        self.assertIn('LOAD', row)
+        self.assertNotIn('UNSAV', row)
+
+    def test_label_flips_to_unsav_when_edited(self):
+        hw, app = self._app(script='')
+        self._booted(hw, app, '    li a0, 5\n')
+        app.ed.insert(0)
+        app.dirty = True
+        app.draw_edit()
+        self.assertEqual(self._status_row(hw)[-5:], 'UNSAV')
+
+    def test_label_becomes_saved_after_saving(self):
+        hw, app = self._app(script='')
+        self._booted(hw, app, '    li a0, 5\n')
+        app.ed.insert(0)
+        app.do_save()
+        app.msg = ''                                # 把那条一闪而过的提示收掉
+        app.dirty = True
+        app.draw_edit()
+        self.assertEqual(self._status_row(hw)[-5:], 'SAVED')
+
+    def test_label_goes_back_to_load_after_reload(self):
+        hw, app = self._app(script='')
+        self._booted(hw, app, '    li a0, 5\n')
+        app.hw.save(app.filename, app.ed.text())    # 板上存一份
+        app.ed.insert(0)
+        app.do_reload()
+        app.msg = ''
+        app.dirty = True
+        app.draw_edit()
+        self.assertEqual(self._status_row(hw)[-4:], 'LOAD')
+
+    def test_label_fits_with_the_numbers_in_the_common_case(self):
+        """常见长度下，标签和数字**同时**在屏上，而且都在各自该在的位置。"""
+        hw, app = self._app(script='')
+        self._booted(hw, app, '    li a0, 5\n' * 15)     # 240 位
+        app.ed.cur = 48
+        app.dirty = True
+        app.draw_edit()
+        row = self._status_row(hw)
+        self.assertEqual(len(row), hw.cols)
+        self.assertEqual(row[-4:], 'LOAD')
+        self.assertIn('E 48 / 240', row)                 # 斜杠两边还是各一个空格
+
+    def test_numbers_win_when_the_label_no_longer_fits(self):
+        """程序上千位（4 位数）时右边摆不下标签 —— 数字优先，斜杠的间距保住。"""
+        hw, app = self._app(script='')
+        app.preload = '0' * 1000
+        app.boot()
+        app.ed.cur = 1000
+        app.dirty = True
+        app.draw_edit()
+        row = self._status_row(hw)
+        self.assertIn('E1000 / 1000', row)
+        self.assertNotIn('LOAD', row)                    # 常态标签让位
+
+    def test_a_transient_note_may_squeeze_the_slash(self):
+        """一闪而过的提示（RELOAD）允许挤一格，但常态标签不许。"""
+        hw, app = self._app(script='')
+        self._booted(hw, app, '    li a0, 5\n' * 15)
+        app.ed.cur = 48
+        app.note('RELOAD')
+        app.dirty = True
+        app.draw_edit()
+        row = self._status_row(hw)
+        self.assertEqual(row[-6:], 'RELOAD')
+        self.assertIn('E 48/240', row)                   # 让位让成这样，但提示看得见
+
+    def test_the_numbers_do_not_shift_when_the_label_changes(self):
+        """LOAD -> UNSAV -> SAVED 换词时，左边的数字不许左右跳。"""
+        hw, app = self._app(script='')
+        self._booted(hw, app, '    li a0, 5\n' * 15)
+        app.ed.cur = 48
+        heads = []
+        for label in ('LOAD', 'UNSAV', 'SAVED'):
+            app.msg = ''
+            app.ed.state = label
+            app.dirty = True
+            app.draw_edit()
+            heads.append(self._status_row(hw)[:11])
+        self.assertEqual(heads[0], heads[1])
+        self.assertEqual(heads[1], heads[2])
+
     def test_status_line_slash_sits_between_the_two_numbers(self):
         """斜杠两边各一个空格（需求：'/' 放两个数字中央）。"""
-        hw, app = self._app(script='')
-        app.preload = '0' * 20
-        app.loop()
-        head = hw.frames[0].split('\n')[1]          # 第一行（带边框）
-        row = head[1:-1]
-        self.assertIn('E  20 / 20', row)
-        i = row.index('/')
-        self.assertEqual(row[i - 1], ' ')           # 左边是空格
-        self.assertEqual(row[i + 1], ' ')           # 右边也是空格
-
-    def test_status_line_slash_keeps_its_column(self):
-        """光标位数变了，斜杠的列不动（左边固定 4 格）。"""
-        for cur, n in ((0, 0), (48, 224), (4096, 4096)):
+        for cur, n in ((0, 0), (48, 224), (999, 999)):
             hw, app = self._app(script='')
             app.preload = '0' * n
+            app.boot()
             app.ed.cur = cur
             app.dirty = True
             app.draw_edit()
-            row = hw.frames[-1].split('\n')[1][1:-1]
-            self.assertEqual(row[6], '/', 'cur=%d n=%d 时斜杠跑到第 %d 格了'
-                             % (cur, n, row.index('/')))
+            row = self._status_row(hw)
+            i = row.index('/')
+            self.assertEqual(row[i - 1], ' ', 'cur=%d n=%d：斜杠左边不是空格' % (cur, n))
+            self.assertEqual(row[i + 1], ' ', 'cur=%d n=%d：斜杠右边不是空格' % (cur, n))
 
     def test_key_map_inserts_digits_by_short_press(self):
         hw, app = self._app(script='pyth')          # 小写 = 短按

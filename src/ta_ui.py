@@ -26,14 +26,17 @@ class Editor(object):
         self.maxlen = maxlen
         self.ds = []
         self.cur = 0
-        self.saved = True
+        # 右上角那张小标签（state）：LOAD / UNSAV / SAVED。
+        # 一份真相放在这儿，别再多一个布尔跟着跑 ——
+        # 开机、RELOAD、装进新程序都是 LOAD；改一下就 UNSAV；在板上存过才是 SAVED。
+        self.state = 'LOAD'
 
     def set_text(self, s):
         # 上限在**读的时候**就交给 text_to_digits：flash 里那份可能比板子
         # 内存还大，先整串拆成表再切一刀，中间那块表就能把板子读爆。
         self.ds = text_to_digits(s, self.maxlen)
         self.cur = len(self.ds)
-        self.saved = True
+        self.state = 'LOAD'
 
     def text(self):
         return digits_to_text(self.ds)
@@ -51,7 +54,7 @@ class Editor(object):
             return False
         self.ds.insert(self.cur, d)
         self.cur += 1
-        self.saved = False
+        self.state = 'UNSAV'
         return True
 
     def backspace(self, k=1):
@@ -61,7 +64,7 @@ class Editor(object):
             del self.ds[self.cur]
             n += 1
         if n:
-            self.saved = False
+            self.state = 'UNSAV'
         return n
 
     def move(self, d):
@@ -76,7 +79,7 @@ class Editor(object):
     def clear(self):
         self.ds = []
         self.cur = 0
-        self.saved = False
+        self.state = 'UNSAV'
 
     def word_at(self, i):
         """第 i 个数字所在的那条指令的 32 位字（不够 16 位就右边补 0）。"""
