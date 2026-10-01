@@ -26,7 +26,8 @@ from ta_core import (VM, Memory, text_to_digits, digits_to_text, words_of,
                      decode, ST_END, ST_ERR, ST_NEED_IN, ST_LIMIT, MASK,
                      DIGITS_PER_WORD, DIGITS_PER_ROW, TOHOST, FROMHOST)
 from ta_ui import (Editor, KeyScanner, InputLine, MODE_NUM, MODE_CHR,
-                   EDIT_KEYS, RUN_KEYS, EDIT_COMBOS, INPUT_COMBOS, MAX_DIGITS)
+                   EDIT_KEYS, RUN_KEYS, EDIT_COMBOS, INPUT_COMBOS, MAX_DIGITS,
+                   AB_STAGES)
 from ta_hw import SimHW
 import ta_app
 from ta_app import App
@@ -455,18 +456,26 @@ class TestKeyScanner(unittest.TestCase):
         self.assertEqual(self._release_stable(io, sc), [('AB', 'short')])
 
     def test_combo_ladder_climbs_never_skips(self):
-        # 快点一下 = 换显示；0.7s = RELOAD；1.5s = CLEAR —— 一格一格往上走
+        # 快点一下 = 换显示；第一级 = RELOAD；第二级 = CLEAR —— 一格一格往上走。
+        # 阈值从 AB_STAGES 读，改时间轴不用改测试。
+        mid_ms, long_ms = AB_STAGES[0][0], AB_STAGES[1][0]
         io, sc = self._scan()
         self._press_stable(io, sc, 'A', 'B')
         self.assertEqual(sc.poll(), [])
-        io.hold(300, 'A', 'B')
-        self.assertEqual(sc.poll(), [])
-        io.hold(500, 'A', 'B')                       # 累计 ~0.8s
+        io.hold(mid_ms - 100, 'A', 'B')
+        self.assertEqual(sc.poll(), [])              # 还差一点
+        io.hold(150, 'A', 'B')                       # 越过第一级
         self.assertEqual(sc.poll(), [('AB', 'mid')])
-        io.hold(800, 'A', 'B')                       # 累计 ~1.6s
+        io.hold(long_ms - mid_ms, 'A', 'B')          # 再越过第二级
         self.assertEqual(sc.poll(), [('AB', 'long')])
         io.hold(200, 'A', 'B')
         self.assertEqual(sc.poll(), [])              # 到顶了就不再发
+
+    def test_reload_and_clear_are_far_apart(self):
+        """RELOAD 和 CLEAR 之间要留出足够的手抖余量（用户要求拉大）。"""
+        mid_ms, long_ms = AB_STAGES[0][0], AB_STAGES[1][0]
+        self.assertGreaterEqual(long_ms - mid_ms, 1500,
+                                'RELOAD 到 CLEAR 之间至少留 1.5 秒')
 
     def test_combo_ladder_does_not_emit_short_after_a_stage_fired(self):
         io, sc = self._scan()
@@ -478,7 +487,7 @@ class TestKeyScanner(unittest.TestCase):
     def test_combo_ladder_suppresses_the_single_keys(self):
         io, sc = self._scan()
         self._press_stable(io, sc, 'A', 'B')
-        io.hold(1600, 'A', 'B')
+        io.hold(AB_STAGES[1][0] + 200, 'A', 'B')
         ev = sc.poll()
         self.assertIn(('AB', 'long'), ev)
         self.assertEqual([e for e in ev if e[0] in ('A', 'B')], [])
@@ -497,7 +506,7 @@ class TestKeyScanner(unittest.TestCase):
         io.hold(100, 'A', 'B')
         prog = sc.combo_progress()
         self.assertEqual(prog[0][0], 'RDT')          # 再按下去是 RELOAD
-        self.assertEqual(prog[0][2], 700)
+        self.assertEqual(prog[0][2], AB_STAGES[0][0])
         io.hold(700, 'A', 'B')                       # 越过 RELOAD 那一级
         self.assertEqual(sc.poll(), [('AB', 'mid')])
         self.assertEqual(sc.combo_progress()[0][0], 'CLR')   # 下一级是 CLEAR

@@ -37,7 +37,7 @@ def status_extra(hw, app):
     标签（需求：开机默认 LOAD，RELOAD 读进时写 RELOAD，清空后写 CLEAR）：
       LOAD   —— 开机读进来的
       RELOAD —— A+B 按住 0.7s，从板上重读了一份
-      CLEAR  —— A+B 按住 1.5s，清空了（板上那份也清空了）
+      CLEAR  —— A+B 按住 2.5s，清空了（板上那份也清空了）
       UNSAV  —— 改过了，还没存
       SAVED  —— 在板上存过了
     """

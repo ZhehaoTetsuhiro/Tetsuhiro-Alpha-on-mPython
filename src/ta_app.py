@@ -28,7 +28,7 @@
     B  短按 退格            长按 每 0.1s 不停退格
     A+B 快点一下            **换显示**（四进制数字 <-> 反汇编）
     A+B 按住 0.7 秒         重新从 flash 读（RELOAD，放弃改动）
-    A+B 按住 1.5 秒         **清空程序**（CLEAR）—— 要两个手指，还要按最久
+    A+B 按住 2.5 秒         **清空程序**（CLEAR）—— 要两个手指，还要按最久
 
     最后那三件事排在**同一条时间轴上**，按"破坏性从小到大"。需求表把八个键
     排满了，RELOAD 只能挪到这儿 —— 好处是按错的机会更小（以前快点一下
@@ -265,7 +265,7 @@ class App(object):
                     return
             elif name == 'AB':
                 # A+B 上的三件事按"破坏性从小到大"排在时间轴上：
-                # 快点一下换显示，0.7s RELOAD，1.5s CLEAR。
+                # 快点一下换显示，0.7s RELOAD，2.5s CLEAR。
                 if kind == 'short':
                     self.toggle_dis()
                 elif kind == 'mid':
