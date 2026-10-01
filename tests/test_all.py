@@ -429,10 +429,31 @@ class TestKeyScanner(unittest.TestCase):
         self._press_stable(io, sc, 'A', 'B')
         self.assertEqual(self._release_stable(io, sc), [('AB', 'short')])
 
-    def test_combo_long_fires_and_suppresses_the_single_keys(self):
+    def test_combo_ladder_climbs_never_skips(self):
+        # 快点一下 = 换显示；0.7s = RELOAD；1.5s = CLEAR —— 一格一格往上走
         io, sc = self._scan()
         self._press_stable(io, sc, 'A', 'B')
-        io.hold(1200, 'A', 'B')
+        self.assertEqual(sc.poll(), [])
+        io.hold(300, 'A', 'B')
+        self.assertEqual(sc.poll(), [])
+        io.hold(500, 'A', 'B')                       # 累计 ~0.8s
+        self.assertEqual(sc.poll(), [('AB', 'mid')])
+        io.hold(800, 'A', 'B')                       # 累计 ~1.6s
+        self.assertEqual(sc.poll(), [('AB', 'long')])
+        io.hold(200, 'A', 'B')
+        self.assertEqual(sc.poll(), [])              # 到顶了就不再发
+
+    def test_combo_ladder_does_not_emit_short_after_a_stage_fired(self):
+        io, sc = self._scan()
+        self._press_stable(io, sc, 'A', 'B')
+        io.hold(800, 'A', 'B')
+        self.assertIn(('AB', 'mid'), sc.poll())
+        self.assertEqual(self._release_stable(io, sc), [])
+
+    def test_combo_ladder_suppresses_the_single_keys(self):
+        io, sc = self._scan()
+        self._press_stable(io, sc, 'A', 'B')
+        io.hold(1600, 'A', 'B')
         ev = sc.poll()
         self.assertIn(('AB', 'long'), ev)
         self.assertEqual([e for e in ev if e[0] in ('A', 'B')], [])
@@ -444,6 +465,24 @@ class TestKeyScanner(unittest.TestCase):
         io.hold(2000, 'A', 'B')
         self.assertEqual(sc.poll(), [])
         self.assertEqual(self._release_stable(io, sc), [])
+
+    def test_combo_progress_names_the_next_action(self):
+        io, sc = self._scan()
+        self._press_stable(io, sc, 'A', 'B')
+        io.hold(100, 'A', 'B')
+        prog = sc.combo_progress()
+        self.assertEqual(prog[0][0], 'RDT')          # 再按下去是 RELOAD
+        self.assertEqual(prog[0][2], 700)
+        io.hold(700, 'A', 'B')                       # 越过 RELOAD 那一级
+        self.assertEqual(sc.poll(), [('AB', 'mid')])
+        self.assertEqual(sc.combo_progress()[0][0], 'CLR')   # 下一级是 CLEAR
+
+    def test_input_screen_combo_has_no_ladder(self):
+        io, sc = self._scan(keys=RUN_KEYS, combos=INPUT_COMBOS)
+        self._press_stable(io, sc, 'A', 'B')
+        io.hold(2000, 'A', 'B')
+        self.assertEqual(sc.poll(), [])              # 按多久都不发长按
+        self.assertEqual(self._release_stable(io, sc), [('AB', 'short')])
 
     def test_run_keymap_reports_a_short_press(self):
         io, sc = self._scan(keys=RUN_KEYS, combos=INPUT_COMBOS)
@@ -598,11 +637,61 @@ class TestApp(unittest.TestCase):
         for want in ('5', '4', '3', '2', '1'):
             self.assertIn(want, hw.serial, hw.serial)
 
-    def test_ab_short_reloads_and_does_not_run(self):
+    def test_ab_short_toggles_the_view(self):
+        hw, app = self._app(script='')
+        self._booted(hw, app, '    addi a0, x0, 5\n')
+        self.assertFalse(app.dis)
+        app.handle_edit([('AB', 'short')])
+        self.assertTrue(app.dis)
+        self.assertEqual(app.msg, 'DIS')
+        self.assertEqual(app.ed.len(), DIGITS_PER_WORD)      # 程序一个字没动
+        app.handle_edit([('AB', 'short')])
+        self.assertFalse(app.dis)
+        self.assertEqual(app.msg, 'DIG')
+
+    def test_disassembly_view_shows_mnemonics(self):
+        hw, app = self._app(script='')
+        self._booted(hw, app, '    addi a0, x0, 5\n    sw a0, 0(x0)\n')
+        app.ed.cur = 0
+        app.dis = True
+        app.dirty = True
+        app.draw_edit()
+        screen = hw.frames[-1]
+        self.assertIn('D', screen.split('\n')[1][:2])        # 状态行第一个字母
+        self.assertIn('>addi x10, x0, 5', screen)
+        self.assertIn('sw x10, 0(x0)', screen)
+
+    def test_digit_view_shows_digits(self):
+        hw, app = self._app(script='')
+        self._booted(hw, app, '    addi a0, x0, 5\n')
+        app.ed.cur = 0
+        app.dis = False
+        app.dirty = True
+        app.draw_edit()
+        self.assertIn('0000110000110103', hw.frames[-1])
+
+    def test_disassembly_view_marks_the_instruction_under_the_cursor(self):
+        hw, app = self._app(script='')
+        self._booted(hw, app, '    addi a0, x0, 5\nnop\nnop\n')
+        app.dis = True
+        app.ed.cur = 0
+        app.top = 0
+        app.dirty = True
+        app.draw_edit()
+        rows = hw.frames[-1].split('\n')
+        self.assertTrue(rows[2].startswith('|>'))
+        app.ed.cur = DIGITS_PER_WORD * 2                        # 第三条
+        app.dirty = True
+        app.draw_edit()
+        rows = hw.frames[-1].split('\n')
+        self.assertTrue(rows[2].startswith('| '))
+        self.assertTrue(rows[4].startswith('|>'))
+
+    def test_ab_mid_reloads(self):
         hw, app = self._app(script='')
         app.hw.save('ta.prog', '3' * 16)
         app.ed.set_text('0' * 8)
-        app.handle_edit([('AB', 'short')])
+        app.handle_edit([('AB', 'mid')])
         self.assertEqual(app.ed.text(), '3' * 16)
         self.assertEqual(app.msg, 'RELOAD')
         self.assertEqual(app.mode, ta_app.MODE_EDIT)
@@ -752,9 +841,12 @@ class TestApp(unittest.TestCase):
         app.scan.st['A']['stable'] = 1
         app.scan.st['B']['stable'] = 1
         app.scan.poll()                             # 让组合键进入 active
+        app.hw.sleep(350)                           # 时间走一半（目标 700ms）
         app.dirty = True
         app.draw_edit()
-        self.assertIn('CLR', hw.frames[-1])
+        bar = hw.frames[-1].split('\n')[1]
+        self.assertIn('RDT', bar)                   # 再按下去是 RELOAD
+        self.assertIn('#', bar)                     # 条在涨
 
 
 class TestBoardFootprint(unittest.TestCase):

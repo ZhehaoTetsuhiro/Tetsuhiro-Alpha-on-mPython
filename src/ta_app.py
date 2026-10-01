@@ -14,14 +14,25 @@
 一排正好 16 个四进制数字 = **一条 32 位指令**，所以长按 O / N 挪 16 位
 就是上下挪一整条。左边第一个数字是 bit[31:30]。
 
+编辑画面有两种看法，`A+B` 快点一下切换（两个数字都不改，只是换个角度）：
+
+    数字视图  E  48/ 112 → 光标处那一行就是 16 个数字
+    反汇编视图 D  48/ 112 → 一行一条指令，左边 '>' 指着光标所在的那条
+                            `>addi x10, x0, 5`
+
 按键（编辑界面，全部照需求表）：
     P / Y / T / H   插入 3 / 2 / 1 / 0（长按 = 每 0.1s 不断插入）
     O  短按 光标左移 1      长按 左移 16（一整条）
     N  短按 光标右移 1      长按 右移 16
     A  短按 运行            长按 保存
     B  短按 退格            长按 每 0.1s 不停退格
-    A+B 快点一下            重新从 flash 读（RELOAD，放弃改动）
-    A+B 一起按住 1 秒       **清空程序**（CLEAR）—— 要两个手指，不容易误碰
+    A+B 快点一下            **换显示**（四进制数字 <-> 反汇编）
+    A+B 按住 0.7 秒         重新从 flash 读（RELOAD，放弃改动）
+    A+B 按住 1.5 秒         **清空程序**（CLEAR）—— 要两个手指，还要按最久
+
+    最后那三件事排在**同一条时间轴上**，按"破坏性从小到大"。需求表把八个键
+    排满了，RELOAD 只能挪到这儿 —— 好处是按错的机会更小（以前快点一下
+    就会把改动丢掉）。
 
 按键（运行界面，程序卡在输入口上时）：
     P / Y / T / H   敲数字 / ASCII 码
@@ -58,6 +69,7 @@ class App(object):
         self.in_mode = MODE_NUM
         self.out_lines = []
         self.top = 0
+        self.dis = False            # False = 看四进制数字，True = 看反汇编
         self.dirty = True
         self.msg = ''
         self.msg_t = 0
@@ -244,11 +256,20 @@ class App(object):
                     self.start_run()
                     return
             elif name == 'AB':
-                if kind == 'long':
-                    self.do_clear()
-                else:
+                # A+B 上的三件事按"破坏性从小到大"排在时间轴上：
+                # 快点一下换显示，0.7s RELOAD，1.5s CLEAR。
+                if kind == 'short':
+                    self.toggle_dis()
+                elif kind == 'mid':
                     self.do_reload()
+                else:
+                    self.do_clear()
             self.dirty = True
+
+    def toggle_dis(self):
+        """换显示：四进制数字 <-> 反汇编。两个字都不改，纯粹是看的角度。"""
+        self.dis = not self.dis
+        self.note('DIS' if self.dis else 'DIG')
 
     def note(self, s):
         self.msg = s

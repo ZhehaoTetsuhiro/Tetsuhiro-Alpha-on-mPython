@@ -78,23 +78,26 @@ class Editor(object):
         self.cur = 0
         self.saved = False
 
-    def word_under_cursor(self):
-        """光标所在那一条指令的 32 位字（不够 16 位就右边补 0）。"""
-        base = (self.cur // DIGITS_PER_WORD) * DIGITS_PER_WORD
+    def word_at(self, i):
+        """第 i 个数字所在的那条指令的 32 位字（不够 16 位就右边补 0）。"""
+        base = (i // DIGITS_PER_WORD) * DIGITS_PER_WORD
         v = 0
-        for i in range(DIGITS_PER_WORD):
-            v = (v << 2) | (self.ds[base + i] if base + i < len(self.ds) else 0)
+        for k in range(DIGITS_PER_WORD):
+            v = (v << 2) | (self.ds[base + k] if base + k < len(self.ds) else 0)
         return v
+
+    def word_under_cursor(self):
+        """光标所在那一条指令。"""
+        return self.word_at(self.cur)
 
 
 # ── 按键：短按 / 长按 / 长按连发 / 组合键 ─────────────────────
 #
 # 需求表里 "不断输入 3，间隔 0.1s" 就是长按连发；O / N 的 16 位是**一下**，
-# 没有再连发（照着表来）。A+B 是组合键：快点一下 RELOAD，按满一秒 CLEAR。
+# 没有再连发（照着表来）。A+B 是组合键，三件事排在一条时间轴上（见下面 AB_STAGES）。
 
 LONG_MS = 400
 REPEAT_MS = 100            # 0.1s
-AB_MS = 1000
 
 # (名字, 长按判定毫秒, 长按连发间隔毫秒；0 表示没有长按)
 EDIT_KEYS = (
@@ -121,10 +124,28 @@ RUN_KEYS = (
     ('B', 600, 0),
 )
 
-EDIT_COMBOS = (('AB', ('A', 'B'), AB_MS),)
-# 运行界面里的 A+B 只管插小数点（需求：同按 AB 分割整数部分和小数部分），
-# 所以判定时间给短一点，快点一下就算。
-INPUT_COMBOS = (('AB', ('A', 'B'), AB_MS),)
+# 组合键：(名字, 要一起按住的键, 分级)
+#
+#   松手时还没到第一级  ->  ('名字', 'short')
+#   按住到了第 N 级     ->  ('名字', 那一级写着的动作名)
+#
+# A+B 上有三件事，按"破坏性从小到大"排在一条时间轴上：
+#
+#     快点一下        换显示（数字 <-> 反汇编）   ← 无损，随便点
+#     按住 0.7 秒     RELOAD（放弃改动，重读 flash）
+#     按住 1.5 秒     CLEAR（清空程序）
+#
+# 为什么这么排：原需求表把八个键的短按/长按**排满了**，A+B 快点一下原来是 RELOAD，
+# 现在让给"换显示"；RELOAD 没地方去，就接到这条时间轴上。好处是最破坏性的那个
+# 要按住最久，按错的机会更小（以前快点一下就会把改动丢掉）。
+AB_STAGES = ((700, 'mid'), (1500, 'long'))
+EDIT_COMBOS = (('AB', ('A', 'B'), AB_STAGES),)
+# 输入界面里的 A+B 只管插小数点（需求：同按 AB 分割整数部分和小数部分），
+# 没有分级 —— 松手就算。
+INPUT_COMBOS = (('AB', ('A', 'B'), ()),)
+
+# 进度条上写什么
+AB_LABEL = {'mid': 'RDT', 'long': 'CLR'}
 
 
 class KeyScanner(object):
@@ -144,9 +165,9 @@ class KeyScanner(object):
                                 'trep': 0, 'muted': False, 'edge': 0}
         self.combos = []
         for item in self.combo_spec:
-            self.combos.append({'name': item[0], 'keys': item[1], 'ms': item[2],
-                                'active': False, 'fired': False,
-                                'cancel': False, 't0': 0})
+            self.combos.append({'name': item[0], 'keys': item[1],
+                                'stages': tuple(item[2]), 'active': False,
+                                'fired': -1, 'cancel': False, 't0': 0})
 
     def any_down(self):
         for item in self.spec:
@@ -157,18 +178,23 @@ class KeyScanner(object):
     def cancel_combos(self):
         """跑的正欢时按 A+B 想停下来 —— 那是"停"，不是"清空"。掐掉它。"""
         for c in self.combos:
-            if c['active'] or c['fired']:
+            if c['active'] or c['fired'] >= 0:
                 c['cancel'] = True
             c['active'] = False
-            c['fired'] = False
+            c['fired'] = -1
             for m in c['keys']:
                 self.st[m]['muted'] = True
 
     def combo_progress(self):
+        """正按着的组合键 [(标签, 已按了多久, 到下一级要多久), ...]，给进度条用。"""
         out = []
         for c in self.combos:
-            if c['active'] and not c['fired'] and not c['cancel']:
-                out.append((c['name'], self.now() - c['t0'], c['ms']))
+            if c['active'] and not c['cancel']:
+                i = c['fired'] + 1
+                if i < len(c['stages']):
+                    ms, kind = c['stages'][i]
+                    out.append((AB_LABEL.get(kind, c['name']),
+                                self.now() - c['t0'], ms))
         return out
 
     def poll(self):
@@ -203,18 +229,22 @@ class KeyScanner(object):
                 elif not c['active']:
                     c['active'] = True
                     c['t0'] = t
-                    c['fired'] = False
+                    c['fired'] = -1
                     for m in c['keys']:
                         self.st[m]['muted'] = True
                         self.st[m]['longed'] = True
-                elif not c['fired'] and t - c['t0'] >= c['ms']:
-                    c['fired'] = True
-                    ev.append((c['name'], 'long'))
+                else:
+                    # 一格一格往上走：按得越久，动作越重
+                    stages = c['stages']
+                    for i in range(c['fired'] + 1, len(stages)):
+                        if t - c['t0'] >= stages[i][0]:
+                            c['fired'] = i
+                            ev.append((c['name'], stages[i][1]))
             else:
-                if c['active'] and not c['fired'] and not c['cancel']:
+                if c['active'] and c['fired'] < 0 and not c['cancel']:
                     ev.append((c['name'], 'short'))
                 c['active'] = False
-                c['fired'] = False
+                c['fired'] = -1
                 c['cancel'] = False
 
         for item in self.spec:

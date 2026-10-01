@@ -65,33 +65,47 @@ def draw_edit(hw, app):
     hw.clear()
     prog = app.scan.combo_progress()
     if prog:
-        # 正在按 A+B 准备清空：只把第一行让给进度条，下面的程序照常画 ——
-        # 不然一按就整个消失，吓人。
-        name, elapsed, need = prog[0]
-        room = hw.cols - 3
+        # 正在按 A+B：只把第一行让给进度条，下面的程序照常画 ——
+        # 不然一按就整个消失，吓人。标签写着**再按下去会发生什么**
+        # （RDT = RELOAD，CLR = CLEAR）。
+        label, elapsed, need = prog[0]
+        label = label[:3]
+        room = hw.cols - len(label)
         done = int(room * float(elapsed) / float(need)) if need else room
         if done > room:
             done = room
         if done < 0:
             done = 0
-        hw.text('CLR', 0, 0)
-        hw.text('#' * done, 3, 0)
+        hw.text(label, 0, 0)
+        hw.text('#' * done + ' ' * (room - done), len(label), 0)
     else:
-        head = 'E%4d/%4d' % (ed.cur, n)
+        head = '%s%4d/%4d' % ('D' if app.dis else 'E', ed.cur, n)
         hw.text(head[:hw.cols], 0, 0)
-        ex = status_extra(hw, app) or mnemonic_here(app)
-        if ex:
-            x = hw.cols - len(ex)
-            if x > len(head):
-                hw.text(ex, x, 0)
+        if not app.dis:
+            ex = status_extra(hw, app) or mnemonic_here(app)
+            if ex:
+                x = hw.cols - len(ex)
+                if x > len(head):
+                    hw.text(ex, x, 0)
 
+    cur_line = ed.cur // DIGITS_PER_WORD
     for r in range(drows):
-        base = (app.top + r) * DIGITS_PER_ROW
+        idx = app.top + r
+        base = idx * DIGITS_PER_WORD
         if base > n:
             break
-        hw.text(digits_to_text(ed.ds[base:base + DIGITS_PER_ROW]), 0, r + 1)
-        if base <= ed.cur < base + DIGITS_PER_ROW:
-            hw.cursor(ed.cur - base, r + 1)
+        y = r + 1
+        if app.dis:
+            # 反汇编视图：一行一条指令，左边一个 '>' 指着光标所在的那条
+            hw.text('>' if idx == cur_line else ' ', 0, y)
+            s = decode(ed.word_at(base))
+            if s.startswith('??? '):
+                s = '???'
+            hw.text(s[:hw.cols - 1], 1, y)
+        else:
+            hw.text(digits_to_text(ed.ds[base:base + DIGITS_PER_ROW]), 0, y)
+            if base <= ed.cur < base + DIGITS_PER_ROW:
+                hw.cursor(ed.cur - base, y)
     hw.show()
 
 
