@@ -1,0 +1,17 @@
+# --- 板上要传的东西都是拼出来的，别提交
+dist/
+.scratch/
+
+# 模拟器 / 测试留下的
+.tasim/
+.tasim*/
+*.bak
+
+# 生成的机器码（examples/*.ta 是仓库内容，想改就改；临时产物放这儿）
+*.ta.tmp
+
+# 编辑器 / 系统
+__pycache__/
+*.pyc
+*~
+.DS_Store

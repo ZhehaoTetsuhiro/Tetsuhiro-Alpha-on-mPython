@@ -1,0 +1,188 @@
+# Tetsuhiro-Alpha on mPython
+
+**在掌控板上直接编辑、运行 Tetsuhiro-Alpha（TH128I）机器码。**
+
+板的屏幕上就是**一串四进制数字**（`0 1 2 3`），16 个数字 = 一条 32 位指令，
+一排 16 位 = 一整条指令。`P Y T H O N` 六个金指加 `A B` 两个大按键，
+敲、存 flash、跑，插上电就能用。
+
+```
+  编辑画面                        运行画面
+  ┌──────────────────┐          ┌──────────────────┐
+  │E  48/ 112   addi │ ←状态行   │R END 918         │
+  │0000000100000001  │ ←一条指令  │55                │
+  │0001001100001101  │   = 16 位  │0.3333333         │
+  │...               │          │                  │
+  └──────────────────┘          └──────────────────┘
+```
+
+---
+
+## 1. 一台什么机器
+
+* **机器码**：`../Tetsuhiro-Alpha`（TH128I）的**板用子集**。
+* **程序**：一串四进制数字，存在板上 `ta.prog` 里（电脑上打开就是一个文本文件）。
+* **一行 16 位 = 一条 32 位指令**，最左边那个数字是 `bit[31:30]`
+  —— 换句话说，**一行就是一个四进制写的 32 位数**。
+  所以长按 `O` / `N` 挪 16 位 = 上下挪一整条指令。
+* **寄存器**：128 位（MicroPython 的整数本来就是任意精度，一分钱不花）。
+
+### 实现了哪些指令
+
+| 组 | 内容 |
+|---|---|
+| 整数基础 | `lui auipc jal jalr beq bne blt bge bltu bgeu lb lh lw ld lbu lhu lwu lq sb sh sw sd sq addi slti sltiu xori ori andi slli srli srai add sub sll slt sltu xor srl sra or and fence` |
+| M 扩展 | `mul mulh mulhsu mulhu div divu rem remu`（除零、溢出语义照规范） |
+| 系统 | `ecall` / `ebreak` = 停机 |
+
+**没实现**（碰到就报错，绝不猜着往下跑）：CSR、陷阱/特权级、浮点、向量、
+压缩指令（C 扩展）、`xRET`。理由和取舍见 [`docs/设计.md`](docs/设计.md)。
+
+### 输入输出
+
+沿用 `tthr` 的 tohost 约定，另加一个输入口：
+
+| 干什么 | 怎么做 |
+|---|---|
+| 打印一个字符 | 往 `0x1000` 写 `(ch << 8) \| 1` |
+| 结束程序 | 往 `0x1000` 写 `0`（退出码 = 0） |
+| 读一个输入字符 | 从 `0x1004` 读（**没有输入时程序就停在那儿等你敲**） |
+
+```asm
+    li   t0, 0x1000
+    li   t1, 72              # 'H'
+    slli t1, t1, 8
+    ori  t1, t1, 1
+    sw   t1, 0(t0)           # 打印 'H'
+    sw   zero, 0(t0)         # exit(0)
+```
+
+---
+
+## 2. 按键
+
+### 编辑界面（照需求表）
+
+| 键 | 短按 | 长按 |
+|---|---|---|
+| `P` | 输入 `3` | 每 0.1s 不断输入 3 |
+| `Y` | 输入 `2` | 每 0.1s 不断输入 2 |
+| `T` | 输入 `1` | 每 0.1s 不断输入 1 |
+| `H` | 输入 `0` | 每 0.1s 不断输入 0 |
+| `O` | 光标左移 1 位 | 光标左移 16 位（一整行） |
+| `N` | 光标右移 1 位 | 光标右移 16 位 |
+| `A` | **运行** | **保存** |
+| `B` | 退格 | 每 0.1s 不停退格 |
+| `A`+`B` | **RELOAD**（重读 flash，放弃改动） | **CLEAR**（清空程序） |
+
+清空为什么放 `A+B` 长按：**要点两个手指**，不容易误碰。按住的时候第一行会变成
+一条进度条，攒满一秒才清。
+
+### 运行界面（程序跑到输入口上时）
+
+| 键 | 短按 | 长按 |
+|---|---|---|
+| `P` `Y` `T` `H` | 敲数字 / ASCII 码 | — |
+| `O` | **确定**（把这一行送进程序） | — |
+| `N` | 退格 | 每 0.1s 不停退格 |
+| `A` | 空格 | **退出程序** |
+| `B` | 回车 | **切换 数字 / 字符 模式** |
+| `A`+`B` | 插入小数点 | — |
+
+* **字符模式**：`P Y T H` 敲出来的是**四进制写的 ASCII 码**，`O` 一按就变成那个字符。
+  `T H H T` = 65 = `A`。
+* **数字模式**：`P Y T H` 敲的是四进制数字，`O` 变成**十进制数字**送进程序；
+  开头两个 `H`（`00`）当负号；`A+B` 插小数点（分整数/小数部分）。
+  `T` `Y` → `6`；`H` `H` `T` `Y` → `-6`；`T` `Y` `.` `T` → `6.3`。
+
+运行中按任意键 = 停（这时候按 `A+B` 也只是停，不会顺手把程序清掉）。
+
+---
+
+## 3. 电脑上写程序（推荐这么写）
+
+板上敲 16 下才出一条指令，长程序受不了。电脑上写汇编，一条命令推上去：
+
+```bash
+python3 tools/ta.py asm   examples/hello.s -o examples/hello.ta   # 汇编
+python3 tools/ta.py dis   examples/hello.ta                       # 反汇编
+python3 tools/ta.py run   examples/hello.ta                       # 在电脑上跑
+python3 tools/ta.py keys  examples/hello.ta                       # 在板上该按哪几个键
+python3 tools/ta.py sim   examples/hello.ta                       # 终端里模拟掌控板
+python3 tools/ta.py push  examples/hello.s                        # 汇编好写进板子
+```
+
+汇编语法就是 `../Tetsuhiro-Alpha` 的那一套（`li/mv/la/j/beqz/nop...` 伪指令、
+`.text/.data/.word/.byte` 指示字、`#` 注释）。
+
+> ⚠️ **"在板上直接输入汇编"还没拍板**。这一轮只做了电脑端工具，方案书在
+> [`Plan/汇编输入方案.md`](Plan/汇编输入方案.md)，等你点头再动板上的代码。
+
+---
+
+## 4. 烧录
+
+```bash
+pip install pyserial
+python3 tools/flash.py            # 自动找串口、打包、写入、读回校验、重启
+python3 tools/flash.py --list     # 看看有哪些串口
+python3 tools/flash.py --program examples/hello.ta   # 顺便把程序写进板子
+python3 tools/flash.py --monitor  # 传完盯着串口看输出
+```
+
+板子里装的不是 mPython 官方固件（比如 Mind+ 的实时模式固件）时，`import mpython`
+会失败 —— 先刷回官方固件。
+
+---
+
+## 5. 仓库结构
+
+```
+src/ta_bits.py     底层约定：四进制数字 <-> 文本 / 整数 / 字节，稀疏内存
+src/ta_core.py     机器：取指、译码、执行
+src/ta_ui.py       界面模型：编辑缓冲、按键扫描、板上输入的解读规则
+src/ta_view.py     三种画面怎么画
+src/ta_app.py      状态机：编辑 / 运行 / 输入 的按键分发
+src/ta_hw.py       硬件层：MpythonHW（真板子）/ SimHW（终端模拟器）
+src/main.py        板上入口（只有一个 import）
+tools/ta.py        电脑端命令行：asm / dis / run / keys / sim
+tools/build.py     把 src/ 整理成板上要的那几个文件
+tools/flash.py     一键烧录
+tests/test_all.py  机器 / 汇编 / 界面 / 整机（不插板子也能跑）
+tests/test_flash.py 烧录协议（拿一块假板子跑完整条写入 → 核对的路）
+examples/          .s 是汇编源码，.ta 是汇编出来的四进制文本
+docs/设计.md       机器口径、取舍、和**待你拍板的那些问题**
+Plan/汇编输入方案.md  "怎么在板上输入汇编" 的方案书
+```
+
+### 为什么板上是 6 个文件，不是一个大文件
+
+MicroPython 编译一个模块时要先建整棵语法树，**峰值正比于单个文件的大小**；
+掌控板跑起来只剩约 96 KB 堆。所以决定成败的不是总代码量，而是**最大的那一个文件**。
+
+实测（`micropython -X heapsize=N`，二分逼出最小的 N）：
+
+| 版式 | 能起来吗 |
+|---|---|
+| 5 个文件（把"底层约定"和"VM"合在一起、画面和状态机合在一起） | ❌ 要 **101.5 KB** |
+| 现在这样 6 个文件 | ✅ **85 KB** |
+| 拼成一个 main.py（`build.py --single`） | ❌ 要 **100 KB 以上** |
+
+`tests/test_all.py` 的 `TestBoardFootprint` 把这三条都钉住了：单文件那条
+**故意断言它起不来**，谁想把它改回去，测试会拦着。
+
+## 6. 测试
+
+```bash
+python3 tests/test_all.py      # 97 条
+python3 tests/test_flash.py    # 12 条
+make check                     # 上面两条 + 例子跑一遍 + 打包尺寸检查
+```
+
+四层：机器核心（M 扩展、`x0` 丢弃、128 位溢出、稀疏内存）、汇编/反汇编往返、
+界面模型（短按/长按/连发/组合键、板上输入规则）、整机（SimHW 剧本驱动 App
+敲程序 → 跑 → 看输出）、烧录协议（假板子）、板上堆 footprint。
+
+## 7. 许可
+
+MIT。见 [LICENSE](LICENSE)。
