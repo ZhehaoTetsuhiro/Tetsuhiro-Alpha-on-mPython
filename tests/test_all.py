@@ -608,7 +608,31 @@ class TestApp(unittest.TestCase):
         hw, app = self._app(script='')
         app.preload = '0' * 20
         app.loop()
-        self.assertIn('E%4d/%4d' % (20, 20), hw.frames[0])
+        self.assertIn('E  20 / 20', hw.frames[0])
+
+    def test_status_line_slash_sits_between_the_two_numbers(self):
+        """斜杠两边各一个空格（需求：'/' 放两个数字中央）。"""
+        hw, app = self._app(script='')
+        app.preload = '0' * 20
+        app.loop()
+        head = hw.frames[0].split('\n')[1]          # 第一行（带边框）
+        row = head[1:-1]
+        self.assertIn('E  20 / 20', row)
+        i = row.index('/')
+        self.assertEqual(row[i - 1], ' ')           # 左边是空格
+        self.assertEqual(row[i + 1], ' ')           # 右边也是空格
+
+    def test_status_line_slash_keeps_its_column(self):
+        """光标位数变了，斜杠的列不动（左边固定 4 格）。"""
+        for cur, n in ((0, 0), (48, 224), (4096, 4096)):
+            hw, app = self._app(script='')
+            app.preload = '0' * n
+            app.ed.cur = cur
+            app.dirty = True
+            app.draw_edit()
+            row = hw.frames[-1].split('\n')[1][1:-1]
+            self.assertEqual(row[6], '/', 'cur=%d n=%d 时斜杠跑到第 %d 格了'
+                             % (cur, n, row.index('/')))
 
     def test_key_map_inserts_digits_by_short_press(self):
         hw, app = self._app(script='pyth')          # 小写 = 短按

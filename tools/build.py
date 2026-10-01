@@ -99,7 +99,8 @@ def main(argv):
         print('  %-14s %6d 字节' % (name, n))
     print('  %-14s %6d 字节' % ('合计', total))
     biggest = max(n for _, n in sizes)
-    print('  最大单个文件 %d 字节（板上堆 ~96 KB，这个数是决定成败的那个）' % biggest)
+    print('  最大单个文件 %d 字节（真板上 import 完还剩 65040 字节堆，'
+          '卡住的是最大的那一个文件）' % biggest)
     if '--check' in argv:
         return 0 if biggest < 20000 else 1
     return 0

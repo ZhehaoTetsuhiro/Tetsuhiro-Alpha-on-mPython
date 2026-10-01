@@ -3,8 +3,10 @@
 
 单独一个文件**不是审美问题**：MicroPython 编译一个模块时要先建整棵语法树，
 峰值正比于**单个文件**的大小 —— 把这一块和 App 的状态机挤在一起，实测
-最小堆要从 101.5 KB 降到 85 KB 上下，而掌控板开机只有约 96 KB。
-（数字见 `tools/build.py` 和 README「仓库结构」一节。）
+最小堆要从 101.5 KB 降到 85 KB 上下。真掌控板上（2026-10-02 实测）六个模块
+全部 import 完还剩 65040 字节空闲堆，跑得动，但余量也就是这个数了 ——
+谁要是再往一个大文件里塞东西，先想想板上那 63 KB。
+（数字见 `tools/build.py`、README「为什么板上是 6 个文件」一节。）
 
 这里全是**纯画图**：拿到 hw + app，往上画，不碰状态机的转移。
 """
@@ -79,7 +81,10 @@ def draw_edit(hw, app):
         hw.text(label, 0, 0)
         hw.text('#' * done + ' ' * (room - done), len(label), 0)
     else:
-        head = '%s%4d/%4d' % ('D' if app.dis else 'E', ed.cur, n)
+        # 状态行：E/D + 4 格光标位 + " / " + 长度。
+        # 斜杠**两边各一个空格**，看着像"48 / 224"而不是"48/ 224"；
+        # 左边固定 4 格，所以斜杠永远在第 7 格（列号不随数字长短跳）。
+        head = '%s%4d / %d' % ('D' if app.dis else 'E', ed.cur, n)
         hw.text(head[:hw.cols], 0, 0)
         if not app.dis:
             ex = status_extra(hw, app) or mnemonic_here(app)
