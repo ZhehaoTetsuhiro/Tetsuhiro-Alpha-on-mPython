@@ -80,10 +80,48 @@ class _BoardFile(object):
         pass          # 不 close 就丢 —— 板上就是这样
 
 
+class _BoardReadFile(object):
+    """板上读文件：`read()` **不带长度**要一口气要到整块内存，文件一大就 MemoryError。
+
+    真板子上就是这样炸的（16 KB 的 ta_core.py）：
+      MemoryError: memory allocation failed, allocating 13312 bytes
+    所以读回来核对必须分块读；这个类负责把"电脑上随便读、板上不行"的差别补上。
+    """
+
+    BIG = 4096
+
+    def __init__(self, path):
+        self.f = open(path, 'rb')
+        self.size = os.path.getsize(path)
+
+    def read(self, n=None):
+        if n is None:
+            if self.size > self.BIG:
+                raise MemoryError('memory allocation failed, allocating %d bytes'
+                                  % self.size)
+            return self.f.read()
+        return self.f.read(n)
+
+    def close(self):
+        self.f.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        self.close()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
 def _board_open(path, mode='r'):
     if 'w' in mode or 'a' in mode or '+' in mode:
         return _BoardFile(path, mode)
-    return open(path, mode)
+    return _BoardReadFile(path)
 
 
 class FakeSerial(object):
@@ -201,13 +239,34 @@ class TestRawRepl(unittest.TestCase):
         r = self._repl()
         # 让"读回核对"那一步报一个假校验和 —— 必须当场炸，不能蒙混过去
         def tamper(code):
-            return code.replace('s = (s + b) & 0xffff', 's = 0')
+            return code.replace('s = (s + c) & 0xffff', 's = 0')
         self.ser.transform_code = tamper
         try:
             flash.write_file(r, 'ta.prog', b'abcdef')
             self.fail('校验不过必须报错')
         except RuntimeError as e:
             self.assertIn('校验不过', str(e))
+
+    def test_readback_reads_in_pieces(self):
+        """读回来核对必须**分块读**：一口气 f.read() 在板上会 MemoryError。"""
+        code = flash.readback_code('ta_core.py')
+        self.assertIn('f.read(256)', code)
+        self.assertNotIn('d = f.read()', code)
+        self.assertIn('gc.collect()', code)
+
+    def test_the_fake_board_blows_up_on_a_whole_file_read(self):
+        """先钉住假板子的这条脾气，上一条测试才有意义。"""
+        r = self._repl()
+        r.exec("f = open('b.bin', 'wb')\nf.write(b'x' * 5000)\nf.close()")
+        out, err = r.exec("f = open('b.bin', 'rb')\nd = f.read()\nf.close()")
+        self.assertIn('MemoryError', err)
+
+    def test_big_file_verifies_without_holding_it_in_memory(self):
+        r = self._repl()
+        data = bytes((i * 7 + 1) & 0xff for i in range(5000))   # 比假板子"一口气读"的上限大
+        flash.write_file(r, 'ta_core.py', data)
+        with open(os.path.join(self.tmp, 'ta_core.py'), 'rb') as f:
+            self.assertEqual(f.read(), data)
 
     def test_write_file_pads_odd_lengths(self):
         r = self._repl()

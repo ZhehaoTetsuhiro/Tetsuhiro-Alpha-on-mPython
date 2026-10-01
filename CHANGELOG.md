@@ -36,7 +36,7 @@
   写之前的样子**。
 - **打包** `tools/build.py`：把 `src/` 拆成板上要的 6 个文件；`--single`
   也能拼单文件，但那是**故意留着当反面教材**的（见下）。
-- **测试** 134 条：机器核心、汇编/反汇编往返、界面模型（按键扫描的短按/
+- **测试** 137 条：机器核心、汇编/反汇编往返、界面模型（按键扫描的短按/
   长按/连发/组合键、`A+B` 那条时间轴、板上输入规则）、整机（SimHW 剧本驱动 App）、
   烧录协议（假板子跑完整条写入→核对的路，含"没有 unhexlify 的板子"、
   半路写坏的回退、空间不够），**板上堆 footprint**，以及**发给板子的每一段代码
@@ -80,6 +80,12 @@
   一路对。**MicroPython 没有引用计数**，文件对象要等 GC 才 flush。
   现在每块都自己 `open/write/close`，而且假板子也改成"不 close 就不落盘"
   （`_BoardFile`）—— 谁再写出没 close 的写法，测试当场红。
+- **读回来核对不能把整个文件塞进内存**：`d = f.read()` 对 16 KB 的
+  `ta_core.py` 直接
+  `MemoryError: memory allocation failed, allocating 13312 bytes`
+  —— 板的堆不大，而且 MicroPython 的堆**只回收、不搬家**，写文件时攒下的碎片
+  让"一口气要 16 KB 连续空间"落空。现在读回来是**256 字节一块**地读，
+  写的过程中每 16 块 `gc.collect()` 一次。
 - **`bytes.fromhex` 在电脑上有、在掌控板上没有**（真板子第一次烧录就栽在这儿：
   `AttributeError: type object 'bytes' has no attribute 'fromhex'`）。教训是
   **不许拿 CPython 当板的替身**：现在解码方式是到板上现问的（`ubinascii` →

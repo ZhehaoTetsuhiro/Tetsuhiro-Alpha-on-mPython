@@ -272,6 +272,30 @@ def chunk_code(name, kind, part):
     return "f = open(%r, 'ab')\nf.write(bytes.fromhex('%s'))\nf.close()" % (name, h)
 
 
+def readback_code(name, piece=256):
+    """生成"把文件读回来算长度和校验和"的那段代码。
+
+    **一小块一小块地读**，不要把整个文件塞进内存：掌控板的堆不大，而且
+    MicroPython 的堆**只回收、不搬家** —— 写文件时那些几十上百个小对象留下的
+    碎片，会让"一口气要 16 KB 连续空间"直接 MemoryError（真板子上就是这么炸的：
+    `memory allocation failed, allocating 13312 bytes`）。256 字节一块最稳。
+    """
+    return ("import gc\n"
+            "gc.collect()\n"
+            "f = open(%r, 'rb')\n"
+            "n = 0\n"
+            "s = 0\n"
+            "while True:\n"
+            "    b = f.read(%d)\n"
+            "    if not b:\n"
+            "        break\n"
+            "    n += len(b)\n"
+            "    for c in b:\n"
+            "        s = (s + c) & 0xffff\n"
+            "f.close()\n"
+            "print(n, s)\n" % (name, piece))
+
+
 def write_file(repl, name, data, dry_run=False, kind=None):
     """分块写，写完读回来核对字节数和校验和。"""
     if dry_run:
@@ -282,6 +306,7 @@ def write_file(repl, name, data, dry_run=False, kind=None):
     # 先清空（'wb' 建文件），后面每块都用 'ab' 追加 —— 块与块之间不留状态
     repl.exec("open(%r, 'wb').close()" % name)
     done = 0
+    blocks = 0
     while done < len(data):
         part = data[done:done + CHUNK]
         code = chunk_code(name, kind, part)
@@ -294,16 +319,13 @@ def write_file(repl, name, data, dry_run=False, kind=None):
             raise RuntimeError('写 %s 第 %d 字节（%d 字节一块）出错：%s'
                                % (name, done, len(part), err.strip()))
         done += len(part)
-    # 读回来核对（不用 sum()：板上不一定有；b 是整数，自己加）
+        blocks += 1
+        # 每 16 块收一次垃圾：板子的堆只有回收、不搬家，攒着碎片会咬人
+        if blocks % 16 == 0:
+            repl.exec("import gc\ngc.collect()")
+    # 读回来核对（分块读，见 readback_code）
     want_sum = sum(data) & 0xffff
-    out, err = repl.exec(
-        "f = open(%r, 'rb')\n"
-        "d = f.read()\n"
-        "f.close()\n"
-        "s = 0\n"
-        "for b in d:\n"
-        "    s = (s + b) & 0xffff\n"
-        "print(len(d), s)\n" % name)
+    out, err = repl.exec(readback_code(name))
     try:
         got_len, got_sum = [int(x) for x in out.split()[:2]]
     except ValueError:
