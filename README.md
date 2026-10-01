@@ -177,6 +177,9 @@ python3 tools/flash.py --doctor   # 只看板上固件版本和文件列表
 * 写之前先**问板子还剩多少空间**，不够就先说，不硬写到一半 ENOSPC。
 * **核对时一小块一小块地读**：板子的堆不大、而且只回收不搬家，
   16 KB 的文件一口气 `f.read()` 会 `MemoryError`。
+* **等板子回话要给足时间**：板子编译 15 KB 的模块要好几秒，
+  `--doctor` 那条命令等 30 秒；等不到就明说，不接着瞎读（否则 `OK`、输出、
+  错误三块的边界会错位，输出会串味）。
 * 板上的老文件备份成 `*.bak`；**已经有 .bak 就不动它**（最先备份的那个才是原件）。
   半路写炸了会**自动退回写之前的样子**。
 * 板子上的 `main.py` 是**最后**才传的 —— 万一断在半路，板子上的旧程序还能跑。
@@ -229,7 +232,7 @@ MicroPython 编译一个模块时要先建整棵语法树，**峰值正比于单
 
 ```bash
 python3 tests/test_all.py      # 105 条
-python3 tests/test_flash.py    # 32 条（含"砍掉 unhexlify 的假板子"和板上代码的 MicroPython 解析）
+python3 tests/test_flash.py    # 34 条（含"砍掉 unhexlify 的假板子"和板上代码的 MicroPython 解析）
 make check                     # 上面两条 + 例子跑一遍 + 打包尺寸检查
 ```
 

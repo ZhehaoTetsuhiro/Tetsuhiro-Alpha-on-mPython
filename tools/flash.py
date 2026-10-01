@@ -124,17 +124,21 @@ class RawRepl(object):
 
     def _take_until(self, token, timeout=3.0):
         """读到 token 出现为止，返回 token **之前**的内容（token 被吃掉）。"""
+        return self._take_until_found(token, timeout)[0]
+
+    def _take_until_found(self, token, timeout=3.0):
+        """同上，但把"到底读到了没有"也告诉调用者（超时和读到空串不是一回事）。"""
         t0 = time.time()
         while True:
             i = self.buf.find(token)
             if i >= 0:
                 out = bytes(self.buf[:i])
                 del self.buf[:i + len(token)]
-                return out
+                return out, True
             if time.time() - t0 > timeout:
                 out = bytes(self.buf)
                 del self.buf[:]
-                return out
+                return out, False
             self._fill(0.05)
 
     def _drain(self, quiet=0.15, maxt=2.0):
@@ -174,13 +178,24 @@ class RawRepl(object):
 
     # -- 执行一小段代码 --
 
-    def exec(self, code, timeout=6.0):
+    def exec(self, code, timeout=20.0, ok_timeout=15.0):
+        """发一段代码，等它执行完。
+
+        两个超时都要**给足**：板子编译一个 15 KB 的模块、或者 import 六个模块，
+        可能要好几秒。等 'OK' 等太短会**把数据流切错位置**（返回的 out/err 会串味，
+        后面的输出还会被下一段吃掉）—— 真板子上 --doctor 就是这么把一个
+        `ok ta_ui` 塞进 stderr 的。
+        """
         if not code.endswith('\n'):
             code += '\n'
         self._write(code.encode('utf-8') + b'\x04')
-        self._take_until(b'OK', 3.0)                       # 等它说出 OK
-        out = self._take_until(b'\x04', timeout)           # 标准输出
-        err = self._take_until(b'\x04', 2.0)               # 标准错误
+        got, told_ok = self._take_until_found(b'OK', ok_timeout)   # 等它说出 OK
+        if not told_ok:
+            # 连 OK 都没等到：别接着读，那只会把两块输出搅在一起
+            raise RuntimeError('板子没回应（等了 %.0f 秒，收到 %r）。按一下板子上的复位键'
+                               '或者重插 USB 再试。' % (ok_timeout, got[-60:]))
+        out = self._take_until(b'\x04', timeout)          # 标准输出
+        err = self._take_until(b'\x04', 5.0)              # 标准错误
         if self.verbose and out:
             sys.stdout.write(out.decode('utf-8', 'replace'))
         return out.decode('utf-8', 'replace'), err.decode('utf-8', 'replace')
@@ -461,8 +476,12 @@ def main(argv):
                 "    except Exception as e:\n"
                 "        print('  坏', m, type(e).__name__, e)\n"
                 "gc.collect()\n"
-                "print('  free heap', gc.mem_free())\n")
-            print(out.strip())
+                "print('  free heap', gc.mem_free())\n"
+                "print('__DONE__')\n", timeout=120.0, ok_timeout=30.0)
+            print(out.replace('__DONE__', '').strip())
+            if '__DONE__' not in out:
+                print('  ⚠️ 输出没读全（板子比超时慢）。再跑一次 --doctor；'
+                      '要是老这样，把上面这段发我。')
             if err.strip():
                 print('（stderr）%s' % err.strip()[:400])
             return 0

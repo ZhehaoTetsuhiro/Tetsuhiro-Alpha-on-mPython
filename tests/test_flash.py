@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import traceback
 import unittest
 
@@ -127,13 +128,16 @@ def _board_open(path, mode='r'):
 class FakeSerial(object):
     """一块假掌控板。"""
 
-    def __init__(self, root, board_hex=True, board_bytes=True, lazy_files=True):
+    def __init__(self, root, board_hex=True, board_bytes=True, lazy_files=True,
+                 slow=0.0):
         self.root = root
         self.out = bytearray()
         self.line = bytearray()
         self.ns = {}
         self.running = False
         self.transform_code = None          # 测试可以借它动手脚
+        self.slow = slow                    # >0：假装板子要这么久才回话
+        self.pending = []                   # [(什么时候能回话, 要跑的代码)]
         # board_hex=False：假装是掌控板那版 MicroPython —— 没有 ubinascii.unhexlify，
         # 也没有 bytes.fromhex（真板子上就是这么栽的）
         self.board_hex = board_hex
@@ -145,9 +149,18 @@ class FakeSerial(object):
     # pyserial 的那几个接口
     @property
     def in_waiting(self):
+        self._deliver_due()
         return len(self.out)
 
+    def _deliver_due(self):
+        """到点了才把回话吐出来 —— 板子慢是**墙上时间**上的慢，不是写的时候就慢。"""
+        now = time.time()
+        while self.pending and self.pending[0][0] <= now:
+            _, code = self.pending.pop(0)
+            self._run(code)
+
     def read(self, n):
+        self._deliver_due()
         b = bytes(self.out[:n])
         del self.out[:n]
         return b
@@ -160,7 +173,11 @@ class FakeSerial(object):
             if ch == 4:                     # Ctrl-D：执行到这儿为止的那段代码
                 code = bytes(self.line[:-1]).decode('utf-8')
                 self.line = bytearray()
-                self._run(code)
+                if self.slow:
+                    # 板子要过一会儿才回话（编译一个 15 KB 模块就是这样）
+                    self.pending.append((time.time() + self.slow, code))
+                else:
+                    self._run(code)
             elif ch == 1:                   # Ctrl-A：进 raw REPL
                 self.line = bytearray()
                 self.out += b'raw REPL; CTRL-B to exit\r\n>'
@@ -226,6 +243,33 @@ class TestRawRepl(unittest.TestCase):
         out, err = r.exec("print('x')\n1 / 0")
         self.assertEqual(out.strip(), 'x')
         self.assertIn('ZeroDivisionError', err)
+
+    def test_exec_waits_for_a_slow_board(self):
+        """板子慢（编译 15 KB 要好几秒）时，输出不能被切错位置。
+
+        老代码等 'OK' 只等 3 秒：超时之后把 'OK' 和后面的输出当成 out 交回来，
+        还把剩下的内容顶到下一次读 —— 真板子上 --doctor 就是这么把一个
+        `ok ta_ui` 塞进 stderr 的。
+        """
+        ser = FakeSerial(self.tmp, slow=3.5)
+        r = flash.RawRepl(ser)
+        r.enter()
+        out, err = r.exec("print('goodbye')")
+        self.assertEqual(out.strip(), 'goodbye')
+        self.assertEqual(err.strip(), '')
+        # 而且流没被搅乱：下一段还读得对
+        out2, err2 = r.exec("print('second')")
+        self.assertEqual(out2.strip(), 'second')
+
+    def test_exec_complains_when_the_board_says_nothing(self):
+        ser = FakeSerial(self.tmp)
+        r = flash.RawRepl(ser)
+        r._write = lambda b: None                 # 代码根本发不出去 = 板子不理人
+        try:
+            r.exec('print(1)', ok_timeout=0.4)
+            self.fail('没回应就该报错，别硬撑着读')
+        except RuntimeError as e:
+            self.assertIn('没回应', str(e))
 
     def test_write_file_and_verify(self):
         r = self._repl()
