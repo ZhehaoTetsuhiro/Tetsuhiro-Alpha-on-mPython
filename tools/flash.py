@@ -19,9 +19,13 @@
   5. 分块写进去，然后**读回来核对字节数和校验和**
   6. 软重启
 
-⚠️ 这份工具**还没在真板子上跑过**（手上没板子）。协议是照 MicroPython 的
-   raw REPL 写的，和 TTL 的 tools/flash.py 一致；上了板子要是有问题，
-   先跑 `--dry-run` 看它认端口、切 raw REPL 这两步对不对。
+⚠️ 这份工具**已经在真掌控板上跑过了**（2026-10-02，ESP32 + 官方 mPython 固件）。
+  踩到的第一颗雷：**那版 MicroPython 没有 `bytes.fromhex`**。所以"一段字节怎么写
+  进去"是**到板上现问**的（`ubinascii.unhexlify` → `binascii.unhexlify` →
+  `bytes.fromhex` → `int.to_bytes` → 整数列表，谁行用谁），不假设电脑上有什么
+  板上也有 —— 掌控板实际用的是 `int.to_bytes` 那条。
+  另外写失败会**自动退回原来的文件**（.bak 换回来、没有备份的半截文件删掉），
+  所以半路断线不会把板子留在"半个程序"的状态。
 """
 
 import os
@@ -191,43 +195,161 @@ def check_exists(repl, name):
 
 
 def backup(repl, name):
+    """把板上原来的同名文件挪成 *.bak。**已经有 .bak 就不动它** —— 最先备份的
+    那个才是原件；要是每次都覆盖，第一次写坏之后重试就会拿半截文件把原件顶掉。"""
     if not check_exists(repl, name):
         return False
-    repl.exec("import os\ntry:\n    os.remove(%r + '.bak')\nexcept OSError:\n    pass\n"
-              "os.rename(%r, %r + '.bak')\nprint('BAK')" % (name, name, name))
-    return True
+    out, err = repl.exec(
+        "import os\n"
+        "try:\n"
+        "    os.stat(%r + '.bak')\n"
+        "    print('KEEP')\n"
+        "except OSError:\n"
+        "    os.rename(%r, %r + '.bak')\n"
+        "    print('BAK')\n" % (name, name, name))
+    return 'BAK' in out
 
 
-def write_file(repl, name, data, dry_run=False):
+# ── 一段字节怎么写进板上 ─────────────────────────────────────
+#
+# 不能假设电脑上有什么板上也有：掌控板那版 MicroPython **没有 bytes.fromhex**，
+# 而它在电脑上（CPython）是天生就有的 —— 第一版就是这么栽的。所以先问板子一次。
+
+DECODER_PROBE = (
+    "try:\n"
+    "    from ubinascii import unhexlify\n"
+    "    print('UBIN')\n"
+    "except ImportError:\n"
+    "    try:\n"
+    "        from binascii import unhexlify\n"
+    "        print('BIN')\n"
+    "    except ImportError:\n"
+    "        if getattr(bytes, 'fromhex', None):\n"
+    "            print('HEX')\n"
+    "        elif getattr(int, 'to_bytes', None):\n"
+    "            print('BYTES')\n"
+    "        else:\n"
+    "            print('INTS')\n"
+)
+
+
+def pick_writer(repl):
+    """问板子支持哪种解码方式，返回 'ubin' / 'bin' / 'hex' / 'bytes' / 'ints'。"""
+    out, err = repl.exec(DECODER_PROBE)
+    for k in ('UBIN', 'BIN', 'HEX', 'BYTES'):
+        if k in out:
+            return k.lower()
+    return 'ints'
+
+
+def chunk_code(name, kind, part):
+    """生成"把这 192 字节追加进文件"的那一句，**每个字块自给自足**。
+
+    不用跨块变量（连打开的文件都不留着），这样板子的 raw REPL 就算是
+    一块只认单条语句的，也能一条一条往下走。
+
+    编码长度（串口上越快越好）：hex / bytes 都是"每字节 2 个字符"，
+    ints 那个整数列表是 4 个字符上下 —— 61 KB 的板子代码在 115200 波特下，
+    前者约 20 秒，后者要一分半，所以只当最后的保底。
+    """
+    if kind == 'ints':
+        return "open(%r, 'ab').write(bytearray((%s,)))" \
+               % (name, ','.join(str(b) for b in part))
+    h = ''.join('%02x' % b for b in part)
+    if kind == 'ubin':
+        return "from ubinascii import unhexlify\nopen(%r, 'ab').write(unhexlify('%s'))" % (name, h)
+    if kind == 'bin':
+        return "from binascii import unhexlify\nopen(%r, 'ab').write(unhexlify('%s'))" % (name, h)
+    if kind == 'bytes':
+        # 没有 unhexlify/fromhex，但 int.to_bytes 一定有：拿整数转回字节
+        return "open(%r, 'ab').write(int('%s', 16).to_bytes(%d, 'big'))" % (name, h, len(part))
+    return "open(%r, 'ab').write(bytes.fromhex('%s'))" % (name, h)
+
+
+def write_file(repl, name, data, dry_run=False, kind=None):
     """分块写，写完读回来核对字节数和校验和。"""
     if dry_run:
         print('  [dry-run] %s  %d 字节' % (name, len(data)))
         return True
-    repl.exec("f = open(%r, 'wb')" % name)
+    if kind is None:
+        kind = pick_writer(repl)
+    # 先清空（'wb' 建文件），后面每块都用 'ab' 追加 —— 块与块之间不留状态
+    repl.exec("open(%r, 'wb').close()" % name)
     done = 0
     while done < len(data):
         part = data[done:done + CHUNK]
-        hexs = ''.join('%02x' % b for b in part)
-        out, err = repl.exec("f.write(bytes.fromhex('%s'))" % hexs)
+        code = chunk_code(name, kind, part)
+        err = ''
+        for _attempt in (0, 1):                  # 串口偶尔噎一下，同一块重试一次
+            out, err = repl.exec(code)
+            if not err.strip():
+                break
         if err.strip():
-            repl.exec('f.close()')
-            raise RuntimeError('写 %s 出错：%s' % (name, err.strip()))
+            raise RuntimeError('写 %s 第 %d 字节（%d 字节一块）出错：%s'
+                               % (name, done, len(part), err.strip()))
         done += len(part)
-    repl.exec('f.close()')
-    # 读回来核对
+    # 读回来核对（不用 sum()：板上不一定有；b 是整数，自己加）
     want_sum = sum(data) & 0xffff
     out, err = repl.exec(
-        "f = open(%r, 'rb')\nd = f.read()\nf.close()\n"
-        "print(len(d), sum(d) & 0xffff)" % name)
+        "f = open(%r, 'rb')\n"
+        "d = f.read()\n"
+        "f.close()\n"
+        "s = 0\n"
+        "for b in d:\n"
+        "    s = (s + b) & 0xffff\n"
+        "print(len(d), s)\n" % name)
     try:
         got_len, got_sum = [int(x) for x in out.split()[:2]]
     except ValueError:
-        raise RuntimeError('%s 读回来核对失败：%r' % (name, out))
+        raise RuntimeError('%s 读回来核对失败：%r %s' % (name, out, err.strip()))
     if got_len != len(data) or got_sum != want_sum:
         raise RuntimeError('%s 校验不过：写了 %d/%d，读回 %d/%d'
                            % (name, len(data), want_sum, got_len, got_sum))
     print('  %-14s %6d 字节  ✓ 读回核对过' % (name, len(data)))
     return True
+
+
+def free_space(repl):
+    """板上还剩多少字节；问不出来（或报 0，有些板子就这么报）就返回 None。"""
+    out, err = repl.exec(
+        "import os\n"
+        "try:\n"
+        "    s = os.statvfs('/')\n"
+        "    print(s[0] * s[3])\n"
+        "except Exception:\n"
+        "    print('?')\n")
+    try:
+        n = int(out.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return None
+    return n or None
+
+
+def check_space(repl, need):
+    """够不够写。返回 (够不够, 剩多少)。
+
+    板子的文件系统很小（几十 KB 余量很常见），写到一半 ENOSPC 会把文件留成
+    半截 —— 宁可在动手之前先问一句。
+    """
+    free = free_space(repl)
+    if free is None:
+        return True, None
+    return free >= need + 4096, free          # 留 4 KB 余量
+
+
+def rollback(repl, backed, names):
+    """写坏了就把板子**退回原来的样子**：有 .bak 的换回来，没有备份的删掉半截文件。"""
+    print('  写坏了 —— 正在把板子退回原来的文件……')
+    for name in names:
+        try:
+            if name in backed:
+                repl.exec("import os\n"
+                          "try:\n    os.remove(%r)\nexcept OSError:\n    pass\n"
+                          "os.rename(%r + '.bak', %r)\n" % (name, name, name))
+            else:
+                repl.exec("import os\ntry:\n    os.remove(%r)\nexcept OSError:\n    pass\n" % name)
+        except Exception:
+            pass
 
 
 def soft_reset(repl):
@@ -299,14 +421,32 @@ def main(argv):
             print(out)
             return 0
         repl.enter()
-        # 先备份同名的
-        for name, _ in payloads:
+        # 先备份同名的（已经有 .bak 的留着不动 —— 那才是原件）
+        names = [n for n, _ in payloads] + (['ta.prog'] if prog is not None else [])
+        backed = []
+        for name in names:
             if backup(repl, name):
+                backed.append(name)
                 print('  %-14s 原来的备份成 %s.bak' % (name, name))
-        for name, data in payloads:
-            write_file(repl, name, data)
-        if prog is not None:
-            write_file(repl, 'ta.prog', prog)
+        kind = pick_writer(repl)
+        print('  板上解码方式：%s' % kind)
+        need = sum(len(d) for _, d in payloads) + (len(prog) if prog is not None else 0)
+        ok, free = check_space(repl, need)
+        if free is not None:
+            print('  板上剩 %d 字节，这次要写 %d 字节' % (free, need))
+        if not ok:
+            print('  空间不够（至少还差 %d 字节）：先在板上删掉不用的文件再来。'
+                  % (need + 4096 - free))
+            return 1
+        try:
+            for name, data in payloads:
+                write_file(repl, name, data, kind=kind)
+            if prog is not None:
+                write_file(repl, 'ta.prog', prog, kind=kind)
+        except Exception:
+            # 半路炸了：把板子退回写之前的样子，别留个"半个程序"
+            rollback(repl, backed, names)
+            raise
         soft_reset(repl)
         print('写完了，板子重启，应该直接进 TA 编辑器。')
         if '--monitor' in argv:
