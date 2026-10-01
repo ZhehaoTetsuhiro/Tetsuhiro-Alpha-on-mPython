@@ -34,44 +34,49 @@ def render_bytes(bys):
 def status_extra(hw, app):
     """状态行右边那几格：先是"刚刚发生了什么"，再是那张存档标签。
 
-    标签有三态（需求：启动后默认显示 LOAD）：
-      LOAD  —— 开机 / 重读 flash 读来的，一个字没改
-      UNSAV —— 改过了，还没存
-      SAVED —— 在板子上存过了
+    标签（需求：开机默认 LOAD，RELOAD 读进时写 RELOAD，清空后写 CLEAR）：
+      LOAD   —— 开机读进来的
+      RELOAD —— A+B 按住 0.7s，从板上重读了一份
+      CLEAR  —— A+B 按住 1.5s，清空了（板上那份也清空了）
+      UNSAV  —— 改过了，还没存
+      SAVED  —— 在板上存过了
     """
     if app.msg and hw.now() - app.msg_t < 1800:
         return app.msg
     return app.ed.state
 
 
-# 状态行左边那几格，**从松到紧**：
-#   '%s%4d / %d' → 'E  48 / 240'   （斜杠永远在第 7 格，数字位数变了也不跳）
-#   '%s%3d / %d' → 'E 48 / 240'    （还是"两边各一个空格"，少占一格）
-#   '%s%3d/%d'   → 'E 48/240'      （挤到这一步只为了让 RELOAD 这类长提示露个脸）
-HEAD_WIDE = ('%s%4d / %d', '%s%3d / %d')
-HEAD_TIGHT = ('%s%3d/%d', '%s%d/%d')
+# 状态行左边那几格，**从松到紧**（斜杠两边**永远是空格**，这是需求）：
+#   '%s%4d / %d' → 'E  48 / 240'   （光标位固定 4 格，斜杠永远在第 7 格）
+#   '%s%3d / %d' → 'E 48 / 240'    （少占一格 —— 常态走这条）
+#   '%s%d / %d'  → 'E48 / 240'     （光标位不再占格）
+#   '%d / %d'    → '241 / 241'     （实在挤不下，把 E/D 视图标记让出去）
+HEAD_FORMS = (('%s%4d / %d', True), ('%s%3d / %d', True),
+              ('%s%d / %d', True), ('%d / %d', False))
 
-TAIL_W = 5              # 右上角标签最宽 5 格（SAVED / UNSAV）
+# 存档标签最宽 5 格（SAVED / UNSAV / CLEAR）；6 格的提示（RELOAD / NOFILE /
+# NOFLSH）按**实际长度**留位 —— 它挤不进去就让位，不为了它把常态排得松松垮垮。
+TAIL_W = 5
 
 
 def status_fields(app, cols, tail, spaced_only):
     """状态行怎么排：返回 (左边那段, 右边那段或 None)。
 
-    * 左边按**最宽的那张标签**（5 格）留位，所以 LOAD → UNSAV → SAVED 换词的
-      时候数字不会左右跳。
-    * `spaced_only`（常态那张标签）时**绝不把斜杠挤成贴着的** —— 宁可标签让位；
-      一闪而过的提示（RELOAD / CLEAR...）才允许挤。
-    * 程序上千位（数字占 4 位）时右边就摆不下标签了 —— 这时**数字优先**，
-      标签让位。
+    * 左边按**常态标签的宽度**（5 格）留位，所以 LOAD → UNSAV → SAVED → CLEAR
+      换词的时候数字不会左右跳。
+    * 光标位那几格是**先花后省**：'E 48 / 240' 排不下就 'E48 / 240'，
+      再排不下就连 E/D 也先让出去 —— 但斜杠两边的空格不动。
+    * 数字上到 4 位（≥1000 位）时怎么排都摆不下标签，这时**数字优先**。
     """
     mark = 'D' if app.dis else 'E'
+    cur = app.ed.cur
+    n = app.ed.len()
     need = max(len(tail), TAIL_W) if tail else 0
-    forms = HEAD_WIDE if spaced_only else HEAD_WIDE + HEAD_TIGHT
-    for fmt in forms:
-        head = fmt % (mark, app.ed.cur, app.ed.len())
+    for fmt, with_mark in HEAD_FORMS:
+        head = (fmt % (mark, cur, n)) if with_mark else (fmt % (cur, n))
         if len(head) + (1 if tail else 0) + need <= cols:
             return head, tail
-    head = HEAD_WIDE[0] % (mark, app.ed.cur, app.ed.len())
+    head = HEAD_FORMS[1][0] % (mark, cur, n)
     return head[:cols], None
 
 
@@ -108,8 +113,7 @@ def draw_edit(hw, app):
         # 状态行：左边 `E 光标 / 长度`（斜杠两边各一个空格），右边那张存档标签
         # （LOAD / UNSAV / SAVED）或者刚刚发生的那件事（DIG / DIS / RELOAD...）。
         tail = status_extra(hw, app)
-        spaced_only = (tail == app.ed.state)        # 常态标签宁可让位也不挤斜杠
-        head, tail = status_fields(app, hw.cols, tail, spaced_only)
+        head, tail = status_fields(app, hw.cols, tail, True)
         hw.text(head[:hw.cols], 0, 0)
         if tail:
             hw.text(tail, hw.cols - len(tail), 0)

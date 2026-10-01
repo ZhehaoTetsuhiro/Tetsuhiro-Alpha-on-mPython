@@ -70,6 +70,7 @@ class App(object):
         self.out_lines = []
         self.top = 0
         self.dis = False            # False = 看四进制数字，True = 看反汇编
+        self.bar_shown = False      # 上一拍有没有在画 A+B 的进度条
         self.dirty = True
         self.msg = ''
         self.msg_t = 0
@@ -95,7 +96,7 @@ class App(object):
         self.hw.write('# TA ready. %d digits' % self.ed.len())
         self.dirty = True
 
-    def install(self, s):
+    def install(self, s, state='LOAD'):
         # 装不下就空着起来 —— 但**绝不让异常跑出去**：main.py 一死，
         # mPython 固件会把整块板子 soft reboot 一遍。
         try:
@@ -105,7 +106,7 @@ class App(object):
             self.ed.clear()
             self.load_bad = True
             self.note('BIG')
-        self.ed.state = 'LOAD'
+        self.ed.state = state
         return not self.load_bad
 
     def loop(self):
@@ -171,8 +172,15 @@ class App(object):
             self.tick_run()
 
     def tick_edit(self):
-        if self.scan.combo_progress():
+        prog = self.scan.combo_progress()
+        if prog:
             self.dirty = True            # 让清空进度条动起来
+        elif self.bar_shown:
+            # **进度条刚消失，必须重画一次**：它在的时候占着状态行那一格，
+            # 要是就这么撤了不重画，屏幕上就留着那条进度条 —— 看着像"卡住了"
+            # （真板子上就是这么卡的：松手后 CLR 进度条一直挂在那儿）。
+            self.dirty = True
+        self.bar_shown = bool(prog)
         if self.dirty:
             self.draw_edit()
             self.dirty = False
@@ -295,16 +303,21 @@ class App(object):
             self.hw.save(self.filename, '')
         except Exception:
             pass
-        self.ed.state = 'SAVED'      # 板上那份也是空的，两边对得上
+        self.ed.state = 'CLEAR'      # 需求：清空之后右上角写 CLEAR
         self.note('CLEAR')
 
     def do_reload(self):
-        # A+B 快点一下：把 flash 里存的那份重新读回来，等于"撤销全部改动"。
+        # A+B 按住 0.7 秒：把 flash 里存的那份重新读回来，等于"撤销全部改动"。
         try:
             s = self.hw.load(self.filename)
         except Exception:
             s = None
-        if self.install(s):
+        if s is None:
+            # 板上根本没有那份存档 —— **别把手里这份也抹了**，说一声就完了。
+            # （档是空的（''）不算这种情况：那是"重读一份空程序"，照做。）
+            self.note('NOFILE')
+            return
+        if self.install(s, 'RELOAD'):
             self.note('RELOAD')
 
     # ── 运行 ──────────────────────────────────────────────

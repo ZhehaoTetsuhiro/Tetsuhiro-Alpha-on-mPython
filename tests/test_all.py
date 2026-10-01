@@ -613,7 +613,8 @@ class TestApp(unittest.TestCase):
         hw, app = self._app(script='')
         app.preload = '0' * 20
         app.loop()
-        self.assertIn('E  20 / 20', hw.frames[0])
+        self.assertIn('E  20 / 20', hw.frames[0])      # 斜杠两边各一个空格
+        self.assertIn('LOAD', hw.frames[0])             # 右上角那张标签
 
     # ---- 状态行右边那张标签：LOAD / UNSAV / SAVED（需求：启动后默认 LOAD）----
 
@@ -648,7 +649,7 @@ class TestApp(unittest.TestCase):
         app.draw_edit()
         self.assertEqual(self._status_row(hw)[-5:], 'SAVED')
 
-    def test_label_goes_back_to_load_after_reload(self):
+    def test_label_goes_to_reload_after_reloading(self):
         hw, app = self._app(script='')
         self._booted(hw, app, '    li a0, 5\n')
         app.hw.save(app.filename, app.ed.text())    # 板上存一份
@@ -657,7 +658,70 @@ class TestApp(unittest.TestCase):
         app.msg = ''
         app.dirty = True
         app.draw_edit()
-        self.assertEqual(self._status_row(hw)[-4:], 'LOAD')
+        self.assertEqual(app.ed.state, 'RELOAD')
+        self.assertEqual(self._status_row(hw)[-6:], 'RELOAD')   # 需求：右上角写 RELOAD
+
+    def test_reload_without_a_file_on_the_board_keeps_the_buffer(self):
+        """板上没有那份存档时，RELOAD 不能把手里这份抹了。"""
+        hw, app = self._app(script='')
+        self._booted(hw, app, '    li a0, 5\n')
+        app.ed.insert(0)
+        keep = app.ed.text()
+        app.do_reload()
+        self.assertEqual(app.ed.text(), keep)
+        self.assertEqual(app.msg, 'NOFILE')
+        self.assertNotEqual(app.ed.state, 'RELOAD')
+
+    def test_reload_of_an_empty_file_does_empty_the_editor(self):
+        """档存在但是空的，那是"重读一份空程序" —— 照做。"""
+        hw, app = self._app(script='')
+        self._booted(hw, app, '    li a0, 5\n')
+        app.hw.save(app.filename, '')
+        app.do_reload()
+        self.assertEqual(app.ed.len(), 0)
+        self.assertEqual(app.ed.state, 'RELOAD')
+
+    def test_label_goes_to_clear_after_clearing(self):
+        hw, app = self._app(script='')
+        self._booted(hw, app, '    li a0, 5\n')
+        app.do_clear()
+        app.msg = ''
+        app.dirty = True
+        app.draw_edit()
+        self.assertEqual(app.ed.state, 'CLEAR')
+        self.assertEqual(self._status_row(hw)[-5:], 'CLEAR')    # 需求：右上角写 CLEAR
+        self.assertEqual(app.ed.len(), 0)
+
+    def test_the_progress_bar_does_not_stay_on_screen_after_release(self):
+        """真板子上卡住的那条 CLR 进度条：松手后必须重画，不能留着。"""
+        hw, app = self._app(script=[(('A', 'B'), 1000)])
+        self._booted(hw, app, '    li a0, 5\n    ecall\n')
+        app.hw.save(app.filename, app.ed.text())        # 板上先有一份（真板子上就有）
+        app.loop()
+        row = self._status_row(hw)
+        self.assertNotIn('#', row)                       # 进度条没了
+        self.assertNotIn('CLR', row)
+        self.assertIn('E', row)                          # 状态行回来了
+        self.assertEqual(app.msg, 'RELOAD')              # 而且告诉了你发生了什么
+        self.assertEqual(app.ed.state, 'RELOAD')
+
+    def test_the_progress_bar_is_still_there_while_holding(self):
+        """按住不放的时候，进度条本来就该在（别把上一条修成"看不到进度条"）。"""
+        hw, app = self._app(script=[(('A', 'B'), 900)])
+        self._booted(hw, app, '    li a0, 5\n')
+        held = []
+        app.boot_ok = True
+        # 手动走几拍：按住 A+B，看进度条上的标签从 RDT 走到 CLR
+        app.scan.st['A']['stable'] = 1
+        app.scan.st['B']['stable'] = 1
+        app.scan.poll()
+        for _ in range(2):
+            app.hw.sleep(400)
+            app.scan.poll()
+            app.dirty = True
+            app.draw_edit()
+            held.append(self._status_row(hw))
+        self.assertTrue(any('RDT' in r or 'CLR' in r for r in held), held)
 
     def test_label_fits_with_the_numbers_in_the_common_case(self):
         """常见长度下，标签和数字**同时**在屏上，而且都在各自该在的位置。"""
@@ -669,7 +733,7 @@ class TestApp(unittest.TestCase):
         row = self._status_row(hw)
         self.assertEqual(len(row), hw.cols)
         self.assertEqual(row[-4:], 'LOAD')
-        self.assertIn('E 48 / 240', row)                 # 斜杠两边还是各一个空格
+        self.assertIn('E 48 / 240', row)                # 斜杠两边还是各一个空格
 
     def test_numbers_win_when_the_label_no_longer_fits(self):
         """程序上千位（4 位数）时右边摆不下标签 —— 数字优先，斜杠的间距保住。"""
@@ -683,8 +747,39 @@ class TestApp(unittest.TestCase):
         self.assertIn('E1000 / 1000', row)
         self.assertNotIn('LOAD', row)                    # 常态标签让位
 
-    def test_a_transient_note_may_squeeze_the_slash(self):
-        """一闪而过的提示（RELOAD）允许挤一格，但常态标签不许。"""
+    def test_status_line_layout_matrix(self):
+        """把"数字 × 标签"这张表整个钉住：≤999 位标签都在，上下都是空格围着斜杠。"""
+        for cur, n in ((0, 0), (48, 240), (241, 241), (999, 999)):
+            for label in ('LOAD', 'UNSAV', 'SAVED', 'RELOAD', 'CLEAR'):
+                hw, app = self._app(script='')
+                app.preload = '0' * n
+                app.boot()
+                app.ed.cur = cur
+                app.ed.state = label
+                app.msg = ''
+                app.dirty = True
+                app.draw_edit()
+                row = self._status_row(hw)
+                where = 'cur=%d n=%d %s' % (cur, n, label)
+                self.assertEqual(len(row), hw.cols, where)
+                self.assertTrue(row.endswith(label), '%s：标签没在右上角：%r' % (where, row))
+                i = row.index('/')
+                self.assertEqual(row[i - 1], ' ', where)
+                self.assertEqual(row[i + 1], ' ', where)
+        # 4 位数（>=1000 位）时数字优先，标签让位
+        hw, app = self._app(script='')
+        app.preload = '0' * 1000
+        app.boot()
+        app.ed.state = 'SAVED'
+        app.dirty = True
+        app.draw_edit()
+        row = self._status_row(hw)
+        self.assertIn('E1000 / 1000', row)
+        self.assertNotIn('SAVED', row)
+
+    def test_a_six_letter_note_still_fits_beside_the_numbers(self):
+        """最长的提示（RELOAD / NOFILE / NOFLSH，6 格）也能和数字同时上屏，
+        而且斜杠两边照样是空格。"""
         hw, app = self._app(script='')
         self._booted(hw, app, '    li a0, 5\n' * 15)
         app.ed.cur = 48
@@ -693,7 +788,10 @@ class TestApp(unittest.TestCase):
         app.draw_edit()
         row = self._status_row(hw)
         self.assertEqual(row[-6:], 'RELOAD')
-        self.assertIn('E 48/240', row)                   # 让位让成这样，但提示看得见
+        self.assertIn('E48 / 240', row)
+        i = row.index('/')
+        self.assertEqual(row[i - 1], ' ')
+        self.assertEqual(row[i + 1], ' ')
 
     def test_the_numbers_do_not_shift_when_the_label_changes(self):
         """LOAD -> UNSAV -> SAVED 换词时，左边的数字不许左右跳。"""
